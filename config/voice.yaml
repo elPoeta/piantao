@@ -1,0 +1,55 @@
+# Sistema de voz (plan v1.1, secc. 8). null = por decidir tras la Fase 4.
+
+stt:
+  engine: faster-whisper
+  # Elegido con scripts/stt_benchmark.py (ThinkPad P16, 8 audios): 0,23 s por frase, +1066 MiB de VRAM.
+  # large-v3 fp16 daba 0,42 s pero +3865 MiB (no entra junto al LLM de 4,5 GB);
+  # turbo en CPU: 3,4 s; distil-large-v3 es solo ingles (transcribio en ingles).
+  model: large-v3-turbo
+  device: auto                # cuda si hay GPU visible; si no, cpu (con int8 automaticamente)
+  compute_type: int8_float16  # solo GPU; en CPU se usa int8 (null = automatico)
+  language: es
+  beam_size: 5
+  vad_filter: true
+  min_silence_duration_ms: 500
+  download_root: null      # null = <paths.models>/whisper (igual que vozboard)
+
+wake_word:
+  phrase: piantao
+  # transcript: cada enunciado se transcribe en CPU con un Whisper pequeno y solo cuenta si empieza con la
+  #   palabra; el resto se descarta al instante (no llega al LLM ni se guarda).
+  # openwakeword: pendiente (requiere entrenar un modelo propio para "piantao").
+  engine: transcript
+  aliases: [piantado, pianto, piantau]  # como suele transcribirla Whisper
+  threshold: 0.8            # similitud minima (0.5-1.0); sube si se activa sin querer
+  stt_model: base           # pequeno y en CPU: no ocupa VRAM
+  stt_device: cpu
+  stt_compute_type: int8
+  followup_s: 8             # si solo dices "piantao", cuanto espera tu orden
+  chime: true               # tono corto al activarse
+
+tts:
+  engine: kokoro           # kokoro | piper  (qwen3: pendiente)
+  resident: true           # mantener cargado en RAM (CPU)
+  kokoro:
+    model: null            # null = <paths.models>/kokoro/kokoro-v1.0.onnx
+    voices_file: null      # null = <paths.models>/kokoro/voices-v1.0.bin
+    voice: em_alex         # OBLIGATORIO: fijar tras la prueba A/B (scripts/tts_benchmark.py)
+    speed: 1.0
+    lang: es
+  piper:
+    model: null            # ruta a la voz .onnx (junto a su .onnx.json)
+    binary: piper
+    length_scale: 1.0
+
+# Confirmar permisos hablando (ademas del teclado y los gestos). El microfono no distingue quien habla: cualquier voz o
+# audio cercano podria responder "si". Mitigaciones: solo vale una palabra suelta (si/dale/autorizo o no/cancelar),
+# nunca envios a la nube, y lo explicito o posterior a datos no confiables queda fuera salvo que lo habilites.
+confirm:
+  enabled: true
+  allow_explicit: false        # nivel 4: exige decir la frase exacta (explicit_phrase) en vez de teclear CONFIRMAR
+  explicit_phrase: confirmo la accion
+  allow_tainted: false         # acciones pedidas tras leer web/herramientas/MCP (riesgo de inyeccion)
+  timeout_s: 20                # cuanto escucha antes de rendirse (quedan el teclado y los gestos)
+  retries: 2                   # respuestas no validas tolerables antes de rendirse
+  service_timeout_s: 60        # modo servicio (--headless): cuanto esperar antes de denegar
