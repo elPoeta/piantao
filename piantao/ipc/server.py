@@ -109,9 +109,12 @@ class UiServer:
         if loop is None or loop.is_closed():
             return
         try:
-            asyncio.get_running_loop()
-            self._fanout(msg)
+            running = asyncio.get_running_loop()
         except RuntimeError:
+            running = None
+        if running is loop:  # solo si estamos en el hilo de NUESTRO bucle; otro bucle en este hilo no sirve
+            self._fanout(msg)
+        else:
             loop.call_soon_threadsafe(self._fanout, msg)
 
     def _fanout(self, msg: dict[str, Any]) -> None:

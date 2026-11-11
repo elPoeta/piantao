@@ -1,0 +1,11 @@
+# Servicio web (v2.0): la interfaz de Piantao en el navegador. Solo accesible desde ESTE equipo (localhost).
+# Se abre con:  python main.py serve   y se empareja con el codigo que imprime (o:  python main.py pair).
+web:
+  enabled: true
+  host: 127.0.0.1          # solo localhost por ahora
+  port: 8765
+  pairing_ttl_s: 120       # validez del codigo de emparejamiento (un solo uso)
+  session_max_age_s: 604800  # 7 dias
+  session_idle_s: 43200      # 12 h sin actividad
+  max_sessions: 8
+  max_clients: 8

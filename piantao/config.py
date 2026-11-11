@@ -32,7 +32,9 @@ CONFIG_FILES = (
     "automations",
     "ui",
     "portals",
+    "web",
 )
+OPTIONAL_FILES = {"web"}  # si falta, se usan los valores por defecto (instalaciones anteriores a la v2.0)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -167,6 +169,12 @@ def _validate(cfg: dict[str, dict[str, Any]]) -> None:
         PortalsConfig.from_config(cfg)
     except PortalsConfigError as exc:
         raise ConfigError(f"portals.yaml: {exc}") from exc
+    from piantao.web.config import WebConfig, WebConfigError
+
+    try:
+        WebConfig.from_config(cfg)
+    except WebConfigError as exc:
+        raise ConfigError(str(exc)) from exc
     hud = cfg["ui"].get("hud") or {}
     if hud.get("corner", "bottom-right") not in ("top-left", "top-right", "bottom-left", "bottom-right"):
         raise ConfigError("ui.yaml: hud.corner debe ser top-left, top-right, bottom-left o bottom-right")
@@ -204,6 +212,9 @@ def load_config(config_dir: str | Path | None = None) -> dict[str, dict[str, Any
     for name in CONFIG_FILES:
         path = base / f"{name}.yaml"
         if not path.is_file():
+            if name in OPTIONAL_FILES:
+                cfg[name] = {}
+                continue
             raise ConfigError(f"Falta el archivo de configuracion: {path}")
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

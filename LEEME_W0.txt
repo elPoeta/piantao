@@ -1,0 +1,5 @@
+Piantao v2.0 - W0 (servicio web seguro, esqueleto)
+Instalar:   tar -xzf piantao-w0.tar.gz -C ~/AI/piantao --strip-components=1   (ver mensaje) ; uv sync   (instala aiohttp)
+Usar:       uv run python main.py serve        -> imprime http://localhost:8765/#pair=CODIGO ; abrilo en el navegador
+            uv run python main.py pair         -> codigo nuevo (en otra terminal)
+Reconstruir la interfaz (solo si tocas web/src):  cd web && npm install && npm run build

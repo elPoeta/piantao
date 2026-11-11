@@ -40,6 +40,7 @@ from piantao.models import ModelRouter, RouterError
 from piantao.providers import ProviderError, ToolCall
 from piantao.tools import ToolRegistry, ToolsConfig, register_builtin
 from piantao.mcp import McpConfig, McpManager
+from piantao.web import PairingManager, SessionStore, WebConfig, WebGateway
 from piantao.security import AuditError, AuditLog, PermissionManager, audit_path, read_tail, verify_chain
 
 HELP = """Comandos:
@@ -385,6 +386,98 @@ async def start_shortcuts(cfg: dict, portal, keys, loop):
         print(f"Aviso: el escritorio no asigno tecla a {svc.unassigned()}: asignala en Preferencias del sistema -> Atajos "
               f"o usa scripts/talk.py como comando de un atajo personalizado.", file=sys.stderr)
     return svc
+
+
+async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None = None):
+    """Servicio web en localhost. Reutiliza el mismo estado y comandos que el panel; si falla, Piantao sigue sin web."""
+    wcfg = WebConfig.from_config(cfg)
+    if not wcfg.enabled:
+        return None
+    if ui_server is None:
+        print("Web desactivada: necesita el servidor del panel (ui.yaml: ipc.enabled).", file=sys.stderr)
+        return None
+    pairing = PairingManager(wcfg.pairing_ttl_s)
+    sessions = SessionStore(PROJECT_ROOT / "data" / "web_sessions.json", wcfg.session_max_age_s, wcfg.session_idle_s,
+                            wcfg.max_sessions)
+    audit = getattr(agent, "audit", None)
+    gw = WebGateway(bus, ui_server.snapshot, ui_server.handlers, wcfg, sessions, pairing,
+                    (lambda ev, **kw: audit.record(ev, **kw)) if audit is not None else None)
+
+    async def pair_code(_args: dict) -> dict:
+        code, ttl = pairing.issue()
+        return {"code": code, "ttl_s": ttl, "url": gw.pair_url(code), "base": gw.url}
+
+    async def revoke_sessions(_args: dict) -> dict:
+        n = sessions.revoke_all()
+        gw.kick()
+        return {"revoked": n}
+
+    ui_server.handlers["pair_code"] = pair_code  # solo por el socket privado, nunca por la web
+    ui_server.handlers["web_revoke_all"] = revoke_sessions
+    try:
+        await gw.start()
+    except OSError as exc:
+        print(f"Web desactivada: no se pudo abrir el puerto {wcfg.port}: {exc}", file=sys.stderr)
+        return None
+    code, ttl = pairing.issue()
+    print(f"Web: {gw.url}\nPara emparejar este navegador abri: {gw.pair_url(code)}\n(el codigo vale {ttl} s; otro nuevo: python main.py pair)")
+    return gw
+
+
+async def serve(cfg: dict, provider: str | None, model: str | None, resume_last: bool) -> int:
+    """Piantao como servicio: agente + panel local + web (sin voz local; la voz llega por el navegador en la fase W2)."""
+    import signal
+
+    built = build_agent(cfg, provider, model, confirmer=deny_without_keyboard)  # las confirmaciones por web llegan en W1
+    if built is None:
+        return 1
+    router, agent, memory = built
+    loop = asyncio.get_running_loop()
+    bus = EventBus()
+    hub = None  # sin gestos locales: la vision llega por el navegador (fase W3)
+    await start_mcp(agent)
+    ui_server, monitor = await start_ui(cfg, bus, router, agent, None, hub)
+    gw = await start_web(cfg, bus, ui_server, agent)
+    if gw is None:
+        if ui_server is not None:
+            await ui_server.stop()
+        if monitor is not None:
+            await monitor.stop()
+        await stop_mcp(agent)
+        return 1
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    print("Ctrl+C para detener.")
+    try:
+        await stop.wait()
+    finally:
+        await gw.stop()
+        await ui_server.stop()
+        if monitor is not None:
+            await monitor.stop()
+        await stop_mcp(agent)
+    return 0
+
+
+def pair_cmd() -> int:
+    """Pide al Piantao que esta corriendo un codigo de emparejamiento nuevo (por el socket privado)."""
+    async def go() -> int:
+        client = IpcClient()
+        try:
+            await client.connect()
+            info = await client.command("pair_code")
+        except (OSError, asyncio.TimeoutError):
+            print("No hay un Piantao corriendo (python main.py serve).", file=sys.stderr)
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"No se pudo emitir el codigo: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            await client.close()
+        print(f"Codigo: {info['code']}  (vale {info['ttl_s']} s, un solo uso)\nAbri: {info['url']}")
+        return 0
+    return asyncio.run(go())
 
 
 def events_cmd() -> int:
@@ -776,6 +869,11 @@ def main() -> int:
     tool_p.add_argument("args", nargs="?", help="Argumentos en JSON, ej: '{\"name\": \"Firefox\"}'")
     sub.add_parser("panel", help="Abre el panel grafico (requiere PySide6 y un Piantao corriendo)")
     sub.add_parser("hud", help="Abre el HUD flotante con el estado de Piantao (requiere PySide6)")
+    serve_p = sub.add_parser("serve", help="Servicio web en localhost (interfaz en el navegador)")
+    serve_p.add_argument("--provider", help="Proveedor")
+    serve_p.add_argument("--model", help="Modelo")
+    serve_p.add_argument("--continue", dest="resume_last", action="store_true", help="Retoma la ultima conversacion")
+    sub.add_parser("pair", help="Emite un codigo para emparejar un navegador con el servicio web en marcha")
     sub.add_parser("events", help="Muestra en vivo el estado que Piantao publica para el panel (diagnostico)")
     met_p = sub.add_parser("metrics", help="Resumen de latencias y recursos de los turnos de voz")
     met_p.add_argument("--last", type=int, default=0, help="Solo los ultimos N turnos")
@@ -823,6 +921,10 @@ def main() -> int:
             return 1
         ui = cfg.get("ui", {})
         return run_hud((ui.get("ipc") or {}).get("socket"), ui.get("hud"))
+    if args.command == "serve":
+        return asyncio.run(serve(cfg, args.provider, args.model, args.resume_last))
+    if args.command == "pair":
+        return pair_cmd()
     if args.command == "events":
         return events_cmd()
     if args.command == "metrics":

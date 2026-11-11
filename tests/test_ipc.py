@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -192,6 +193,8 @@ def test_garbage_and_oversize_do_not_crash_the_server(sockdir):
         await w.drain()
         assert await asyncio.wait_for(r.read(), 3) is not None
         w.close()
+        with contextlib.suppress(Exception):
+            await w.wait_closed()
         c = IpcClient(sockdir / "ui.sock")
         await c.connect()  # el servidor sigue vivo
         assert await c.command("ping") == "pong"
