@@ -1,0 +1,45 @@
+# Servidores MCP (secc. 10). Todo deshabilitado hasta verificar cada servidor.
+# Solo los servidores de authorized_servers pueden conectarse.
+
+transports: [stdio, streamable_http]
+
+authorized_servers: [duckduckgo]      # doble llave: enabled: true Y estar en esta lista
+# Flujo: 1) completar command/args del servidor, enabled: true y agregarlo arriba
+#        2) python main.py mcp list           (ver herramientas y huella)
+#        3) python main.py mcp approve NOMBRE (fija la huella; si el servidor cambia, se desactiva)
+# Campos por servidor: command, args, env (solo estas variables llegan al servidor), url (streamable_http),
+#   risk: read|browse|write|sensitive (defecto write = pide confirmacion), tool_risk: {herramienta: riesgo},
+#   untrusted (defecto true), timeout_s, connect_timeout_s
+
+servers:
+  duckduckgo:
+    enabled: true
+    transport: stdio
+    command: uvx
+    args: [duckduckgo-mcp-server]
+    risk: browse        # pide confirmación nivel 2; usá "read" si querés que no pregunte
+    connect_timeout_s: 60   # la primera vez uvx descarga paquetes
+  playwright:
+    enabled: false
+    transport: stdio
+    command: null
+  filesystem:
+    enabled: false
+    transport: stdio
+    command: null
+    allowed_paths: []
+  fetch:
+    enabled: false
+    transport: stdio
+    command: null
+  sqlite:
+    enabled: false
+    transport: stdio
+    command: null
+  github:
+    enabled: false
+    transport: stdio
+    command: null
+
+# Los resultados de herramientas y paginas web son datos NO confiables.
+untrusted_tool_output: true

@@ -1,0 +1,216 @@
+"""Carga y validacion de la configuracion YAML de Piantao
+
+Valida los invariantes de privacidad del plan:
+- cloud_fallback debe ser false (nunca hay sustitucion automatica a cloud).
+- El proveedor por defecto debe existir y no puede ser cloud.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from piantao.security.permissions import PermissionConfigError
+from piantao.security.permissions import validate_config as validate_permissions
+
+CONFIG_FILES = (
+    "settings",
+    "providers",
+    "models",
+    "voice",
+    "vision",
+    "audio",
+    "mcp",
+    "permissions",
+    "memory",
+    "tools",
+    "desktop",
+    "automations",
+    "ui",
+    "portals",
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+class ConfigError(Exception):
+    """Configuracion ausente o invalida."""
+
+
+def _expand_str(value: str) -> str:
+    def sub(m: re.Match[str]) -> str:
+        env = os.environ.get(m.group(1))
+        if env:
+            return env
+        if m.group(2) is not None:
+            return m.group(2)
+        raise ConfigError(f"Variable de entorno sin definir y sin valor por defecto: {m.group(1)}")
+
+    return os.path.expanduser(_VAR.sub(sub, value))
+
+
+def _expand(value: Any) -> Any:
+    if isinstance(value, str):
+        return _expand_str(value)
+    if isinstance(value, dict):
+        return {k: _expand(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand(v) for v in value]
+    return value
+
+
+def _validate(cfg: dict[str, dict[str, Any]]) -> None:
+    providers_cfg = cfg["providers"]
+    defaults = providers_cfg.get("defaults") or {}
+    providers = providers_cfg.get("providers") or {}
+
+    if defaults.get("cloud_fallback") is not False:
+        raise ConfigError("providers.defaults.cloud_fallback debe ser false: no hay fallback automatico a cloud.")
+
+    default_name = defaults.get("provider")
+    if default_name not in providers:
+        raise ConfigError(f"El proveedor por defecto '{default_name}' no esta definido en providers.")
+    if providers[default_name].get("cloud") is not False:
+        raise ConfigError("El proveedor por defecto debe ser local (cloud: false).")
+
+    for name, p in providers.items():
+        if "cloud" not in p:
+            raise ConfigError(f"El proveedor '{name}' debe declarar explicitamente cloud: true|false.")
+        if p["cloud"] and "api_key" in p:
+            raise ConfigError(f"El proveedor cloud '{name}' no puede llevar api_key en el YAML; usa api_key_env.")
+
+    try:
+        validate_permissions(cfg["permissions"])
+    except PermissionConfigError as exc:
+        raise ConfigError(f"permissions.yaml: {exc}") from exc
+
+    mem = cfg["memory"]
+    if not isinstance(mem.get("db_path"), str) or not mem["db_path"].strip():
+        raise ConfigError("memory.db_path debe ser un texto no vacio.")
+    for key in ("max_chars", "max_items", "past_messages"):
+        value = (mem.get("context") or {}).get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < (1 if key == "max_chars" else 0):
+            raise ConfigError(f"memory.context.{key} debe ser un entero {'positivo' if key == 'max_chars' else '>= 0'}.")
+    for key, days in (mem.get("retention_days") or {}).items():
+        if days is not None and (isinstance(days, bool) or not isinstance(days, int) or days < 1):
+            raise ConfigError(f"memory.retention_days.{key} debe ser null o un entero positivo (dias).")
+
+    from piantao.tools import ToolsConfig, ToolsConfigError  # import tardio: evita ciclos
+
+    try:
+        ToolsConfig.from_config(cfg)
+    except ToolsConfigError as exc:
+        raise ConfigError(f"tools.yaml: {exc}") from exc
+
+    from piantao.mcp import McpConfig, McpConfigError
+
+    try:
+        McpConfig.from_config(cfg)
+    except McpConfigError as exc:
+        raise ConfigError(f"mcp.yaml: {exc}") from exc
+
+    from piantao.gestures import GestureConfig, GesturePolicy
+    from piantao.vision import CameraConfig, VisionConfigError
+    from piantao.vision.hands import HandsConfig
+
+    try:
+        CameraConfig.from_config(cfg)
+        HandsConfig.from_config(cfg, PROJECT_ROOT)
+        GestureConfig.from_config(cfg)
+        GesturePolicy.from_config(cfg)
+    except VisionConfigError as exc:
+        raise ConfigError(f"vision.yaml: {exc}") from exc
+
+    from piantao.automation.desktop import DesktopConfig, DesktopConfigError
+    from piantao.automation.routines import RoutineConfigError, load_routines
+
+    try:
+        DesktopConfig.from_config(cfg)
+        load_routines(cfg)
+    except (DesktopConfigError, RoutineConfigError) as exc:
+        raise ConfigError(f"desktop.yaml/automations.yaml: {exc}") from exc
+
+    from piantao.core.reasoning import ReasoningConfigError, ReasoningPolicy
+
+    try:
+        ReasoningPolicy.from_config(cfg)
+    except ReasoningConfigError as exc:
+        raise ConfigError(f"settings.yaml: {exc}") from exc
+
+    ui = (cfg["ui"].get("ipc") or {})
+    if not isinstance(ui.get("enabled", True), bool):
+        raise ConfigError("ui.yaml: ipc.enabled debe ser true o false")
+    if ui.get("socket") is not None and not (isinstance(ui["socket"], str) and ui["socket"].strip()):
+        raise ConfigError("ui.yaml: ipc.socket debe ser una ruta o null")
+    iv = ui.get("resources_interval_s", 2)
+    if isinstance(iv, bool) or not isinstance(iv, (int, float)) or not 0.5 <= iv <= 60:
+        raise ConfigError("ui.yaml: ipc.resources_interval_s debe estar entre 0.5 y 60")
+    vc = (cfg["voice"].get("confirm") or {})
+    for key in ("enabled", "allow_explicit", "allow_tainted"):
+        if not isinstance(vc.get(key, False), bool):
+            raise ConfigError(f"voice.yaml: confirm.{key} debe ser true o false")
+    if not isinstance(vc.get("explicit_phrase", "x"), str) or len(str(vc.get("explicit_phrase", "x")).split()) < 2:
+        raise ConfigError("voice.yaml: confirm.explicit_phrase debe tener al menos dos palabras")
+    for key, lo, hi in (("timeout_s", 3, 120), ("retries", 0, 5), ("service_timeout_s", 5, 600)):
+        v = vc.get(key)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi):
+            raise ConfigError(f"voice.yaml: confirm.{key} debe estar entre {lo} y {hi}")
+    from piantao.portals.shortcuts import PortalsConfig, PortalsConfigError
+
+    try:
+        PortalsConfig.from_config(cfg)
+    except PortalsConfigError as exc:
+        raise ConfigError(f"portals.yaml: {exc}") from exc
+    hud = cfg["ui"].get("hud") or {}
+    if hud.get("corner", "bottom-right") not in ("top-left", "top-right", "bottom-left", "bottom-right"):
+        raise ConfigError("ui.yaml: hud.corner debe ser top-left, top-right, bottom-left o bottom-right")
+    for key, lo, hi in (("size", 40, 400), ("margin", 0, 500), ("opacity", 0.2, 1.0)):
+        v = hud.get(key)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi):
+            raise ConfigError(f"ui.yaml: hud.{key} debe estar entre {lo} y {hi}")
+    for key in ("hide_when_idle", "click_through", "always_on_top"):
+        if not isinstance(hud.get(key, False), bool):
+            raise ConfigError(f"ui.yaml: hud.{key} debe ser true o false")
+
+    name = (cfg["settings"].get("assistant") or {}).get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigError("settings.assistant.name debe ser un texto no vacio.")
+
+
+DEFAULT_SYSTEM_PROMPT = "Eres {assistant_name}, un asistente personal."
+
+
+def assistant_name(cfg: dict[str, dict[str, Any]]) -> str:
+    """Nombre del asistente segun settings.assistant.name."""
+    return cfg["settings"]["assistant"]["name"].strip()
+
+
+def system_prompt(cfg: dict[str, dict[str, Any]]) -> str:
+    """System prompt con {assistant_name} reemplazado. Usa replace (no format) para tolerar otras llaves."""
+    template = (cfg["settings"].get("agent") or {}).get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+    return " ".join(template.split()).replace("{assistant_name}", assistant_name(cfg))
+
+
+def load_config(config_dir: str | Path | None = None) -> dict[str, dict[str, Any]]:
+    """Carga todos los YAML, expande variables de entorno y valida invariantes."""
+    base = Path(config_dir) if config_dir else PROJECT_ROOT / "config"
+    cfg: dict[str, dict[str, Any]] = {}
+    for name in CONFIG_FILES:
+        path = base / f"{name}.yaml"
+        if not path.is_file():
+            raise ConfigError(f"Falta el archivo de configuracion: {path}")
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"YAML invalido en {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path} debe contener un mapa en el nivel superior.")
+        cfg[name] = _expand(data)
+    _validate(cfg)
+    return cfg
