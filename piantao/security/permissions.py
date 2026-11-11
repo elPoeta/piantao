@@ -185,6 +185,7 @@ class PermissionManager:
         self._root = Path(root) if root else Path(__file__).resolve().parents[2]
         self._levels = {int(k): v["policy"] for k, v in perm["risk_levels"].items()}
         self._actions: dict[str, Any] = dict(perm["actions"])
+        self._configured: dict[str, Any] = dict(perm["actions"])  # lo que dice el YAML (para saber que se endurecio en esta sesion)
         fa = perm.get("file_access") or {}
         self._allowed = [self._abs(p) for p in fa.get("allowed_dirs") or []]
         self._auto_create = [self._abs(p) for p in fa.get("auto_create_dirs") or []]
@@ -193,6 +194,37 @@ class PermissionManager:
         self._timeout = perm.get("confirmation_timeout_s")
         self._confirmer = confirmer
         self.audit = audit
+
+    # -- consulta y endurecimiento en caliente (el panel solo puede ENDURECER, nunca aflojar) -----------------------------
+    def _severity(self, spec: Any) -> int:
+        if spec == NEVER:
+            return 3
+        return _SEVERITY[self._levels[int(spec)]]
+
+    def matrix(self) -> list[dict[str, Any]]:
+        out = []
+        for kind in sorted(self._actions):
+            spec = self._actions[kind]
+            out.append({"action": kind, "level": spec,
+                        "policy": NEVER if spec == NEVER else self._levels[int(spec)],
+                        "tightened": spec != self._configured.get(kind)})
+        return out
+
+    def tighten(self, kind: str, spec: Any) -> Any:
+        """Sube el rigor de una accion SOLO durante esta sesion (el YAML no cambia). Rechaza todo lo que no sea mas estricto.
+
+        `spec` es un nivel del catalogo (1-4) o "never". Devuelve el valor aplicado.
+        """
+        if kind not in self._actions:
+            raise ValueError(f"accion desconocida: '{kind}'")
+        if spec != NEVER and (isinstance(spec, bool) or spec not in self._levels):
+            raise ValueError(f"nivel invalido: {spec!r}")
+        if self._severity(spec) <= self._severity(self._actions[kind]):
+            raise ValueError("solo se puede endurecer: el nuevo nivel debe ser mas estricto que el actual")
+        before = self._actions[kind]
+        self._actions[kind] = spec
+        self._record("permission_tightened", action=kind, before=before, after=spec, via="panel")
+        return spec
 
     def missing_actions(self, kinds: Any) -> dict[str, Any]:
         """Acciones usadas por herramientas que no figuran en permissions.yaml (se denegarian) y su nivel sugerido."""

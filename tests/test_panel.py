@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace as NS
 import functools
 import os
 import shutil
@@ -29,6 +30,7 @@ class Backend:
 
     def __init__(self, sockdir):
         self.loop = asyncio.new_event_loop()
+        self.tmp = sockdir
         self.bus, self.agent, self.router, self.srv = make(sockdir)
         self.ready = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)
@@ -58,6 +60,10 @@ def pump(app, cond, timeout=4.0):
             return True
         time.sleep(0.01)
     return False
+
+
+def tab_index(panel, name):
+    return [panel.tabs.tabText(i) for i in range(panel.tabs.count())].index(name)
 
 
 @pytest.fixture
@@ -109,7 +115,7 @@ def test_commands_change_agent_and_permission_banner(app, env):
 def test_history_tab_queries(app, env):
     be, link, panel = env
     assert pump(app, lambda: link.is_up and panel.snap)
-    panel.tabs.setCurrentIndex(1)
+    panel.tabs.setCurrentIndex(tab_index(panel, "Historial"))
     assert pump(app, lambda: panel.conv_list.count() == 1)
     panel.conv_list.setCurrentRow(0)
     assert pump(app, lambda: "[user] texto" in panel.msg_view.toPlainText())
@@ -123,3 +129,70 @@ def test_panel_survives_agent_going_away_and_back(app, env):
     panel.stop_btn.click()  # no debe fallar sin conexion
     asyncio.run_coroutine_threadsafe(be.srv.start(), be.loop).result(5)
     assert pump(app, lambda: link.is_up and panel.snap.get("state") == "idle", 6)
+
+
+def test_voice_and_vision_tab_shows_state(app, env):
+    be, link, panel = env
+    panel.apply_voice_vision(
+        {"mode": "wake", "wake_phrase": "piantao", "stt": "large-v3-turbo/cuda", "tts": "kokoro", "headless": False,
+         "confirm": {"enabled": True, "active": True, "allow_explicit": False, "allow_tainted": False}},
+        {"active": True, "device": "/dev/video0", "fps": 15, "confirm_with_gestures": True, "interrupt_with_palm": False,
+         "recent": [{"ts": 1700000000, "name": "thumb_up"}, {"ts": 1700000005, "name": "palm"}]})
+    t = panel.voice_lbl.text()
+    assert "«piantao»" in t and "large-v3-turbo/cuda" in t and "activado" in t and "acciones sensibles: no" in t
+    assert "activos" in panel.vision_lbl.text() and "/dev/video0" in panel.vision_lbl.text()
+    assert panel.gesture_list.count() == 2 and "palm" in panel.gesture_list.item(0).text()
+    panel.on_event("gesture", {"name": "point"})
+    assert "point" in panel.gesture_list.item(0).text() and panel.gesture_list.count() == 3
+    panel.apply_voice_vision({}, {})
+    assert "Sin datos" in panel.voice_lbl.text() and "Sin datos" in panel.vision_lbl.text()
+
+
+def test_permissions_tab_only_offers_stricter_options(app, env):
+    from piantao.config import load_config
+    from piantao.security import PermissionManager
+    be, link, panel = env
+    pm = PermissionManager(load_config(), root=be.tmp)
+    be.agent.tools.permissions = pm
+    assert pump(app, lambda: link.is_up and panel.snap)
+    panel.tabs.setCurrentIndex(tab_index(panel, "Permisos"))
+    assert pump(app, lambda: panel.perm_table.rowCount() > 3)
+    names = [panel.perm_table.item(r, 0).text() for r in range(panel.perm_table.rowCount())]
+    row = names.index("camera_capture")
+    assert not any(b.isEnabled() for b in panel.perm_btns.values())
+    panel.perm_table.selectRow(row)
+    app.processEvents()
+    assert all(b.isEnabled() for b in panel.perm_btns.values())  # desde "automatico" se puede subir a cualquiera
+    panel.perm_btns["confirm"].click()
+    assert pump(app, lambda: pm.matrix() and {r["action"]: r for r in pm.matrix()}["camera_capture"]["policy"] == "confirm")
+    assert pump(app, lambda: panel.perm_table.item(row, 3) is not None and panel.perm_table.item(row, 3).text() == "endurecido")
+    assert panel.perm_table.currentRow() == row  # la seleccion se conserva al refrescar
+    assert not panel.perm_btns["confirm"].isEnabled() and panel.perm_btns["explicit"].isEnabled()
+    panel.perm_btns["never"].click()
+    assert pump(app, lambda: {r["action"]: r for r in pm.matrix()}["camera_capture"]["policy"] == "never")
+    assert pump(app, lambda: not any(b.isEnabled() for b in panel.perm_btns.values()) and panel.perm_table.item(row, 1).text() == "bloqueado")
+    assert not any(b.isEnabled() for b in panel.perm_btns.values())  # bloqueado: ya no hay mas rigor
+
+
+def test_mcp_buttons_call_pause_and_restart(app, env):
+    be, link, panel = env
+    calls = []
+
+    async def pause(name):
+        calls.append(("pause", name))
+        return NS(name=name, state="pausado", detail="", tools=[])
+
+    async def restart(name):
+        calls.append(("restart", name))
+        return NS(name=name, state="conectado", detail="", tools=[1])
+
+    be.agent.mcp.pause, be.agent.mcp.restart = pause, restart
+    assert pump(app, lambda: panel.mcp_table.rowCount() == 1)
+    assert not panel.mcp_pause_btn.isEnabled()
+    panel.mcp_table.selectRow(0)
+    app.processEvents()
+    assert panel.mcp_pause_btn.isEnabled() and panel.mcp_restart_btn.isEnabled()
+    panel.mcp_pause_btn.click()
+    panel.mcp_restart_btn.click()
+    assert pump(app, lambda: calls == [("pause", "ddg"), ("restart", "ddg")])
+    assert "approve" in panel.mcp_note.text()  # aprobar sigue siendo por terminal

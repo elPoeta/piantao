@@ -248,3 +248,12 @@ Para migrar una instalación existente: `scripts/migrate_from_poeta.py` (ver su 
   atajo solo para callar; `--remove` los quita.
 - Confirmar por voz **no necesita ningún atajo**: Piantao pregunta en voz alta y escucha solo. Si el HUD ofrece solo el
   teclado, la tarjeta ahora dice por qué (voz desactivada, pedida tras leer contenido externo, gestos sin `--gestures`...).
+
+## Panel completo (Fase 8, cierre)
+
+Pestañas nuevas/ampliadas de `python main.py panel`:
+- **Voz y visión:** modo, palabra de activación, STT/TTS, estado de la confirmación por voz, cámara, gestos recientes y un botón «Hablar ahora».
+- **Herramientas → MCP:** *Reiniciar* y *Pausar* un servidor. Reiniciar vuelve a verificar la huella: si el servidor cambió sus herramientas
+  queda omitido. **Aprobar** sigue siendo solo por terminal (`python main.py mcp approve <nombre>`); el panel no puede hacerlo.
+- **Permisos:** matriz de acciones con su política. Desde el panel **solo se puede endurecer** (pedir confirmación, explícita o bloquear),
+  vale hasta cerrar Piantao y queda en la auditoría. Aflojar un permiso solo se hace editando `config/permissions.yaml`.

@@ -233,6 +233,7 @@ class McpManager:
         self.pins_path = Path(root) / "data" / "mcp_pins.json"
         self._runners: dict[str, _Runner] = {}
         self._status: dict[str, ServerStatus] = {}
+        self._control = asyncio.Lock()  # pausar/reiniciar desde el panel, de a uno
 
     # -- pins ----------------------------------------------------------------------------------
     def _pins(self) -> dict[str, Any]:
@@ -374,6 +375,35 @@ class McpManager:
         for name in list(self._runners):
             self.registry.unregister_source(f"mcp:{name}")
             await self._close_one(name)
+
+    # -- control en caliente desde el panel: solo reduce o reinicia lo ya autorizado; aprobar sigue siendo por CLI ----------
+    def _known(self, name: str) -> Any:
+        scfg = self.cfg.servers.get(name)
+        if scfg is None:
+            raise ValueError(f"servidor MCP desconocido: '{name}'")
+        return scfg
+
+    async def pause(self, name: str) -> ServerStatus:
+        """Quita las herramientas del servidor y cierra su proceso hasta que se reinicie."""
+        self._known(name)
+        async with self._control:
+            self.registry.unregister_source(f"mcp:{name}")
+            await self._close_one(name)
+            self._status[name] = ServerStatus(name, "pausado", "pausado desde el panel")
+            self._audit("mcp_server_paused", server=name, via="panel")
+            return self._status[name]
+
+    async def restart(self, name: str) -> ServerStatus:
+        """Reinicia un servidor habilitado y autorizado. Vuelve a verificar la huella: si cambio, queda omitido."""
+        scfg = self._known(name)
+        if not scfg.enabled or not self.cfg.eligible(name):
+            raise ValueError("el servidor no esta habilitado y autorizado en mcp.yaml")
+        async with self._control:
+            self.registry.unregister_source(f"mcp:{name}")
+            await self._close_one(name)
+            self._status[name] = await self._start_one(name)
+            self._audit("mcp_server_restarted", server=name, via="panel", state=self._status[name].state)
+            return self._status[name]
 
     def status(self) -> list[ServerStatus]:
         return list(self._status.values())

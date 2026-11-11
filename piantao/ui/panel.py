@@ -141,9 +141,11 @@ class Panel(QMainWindow):
         self.tabs = QTabWidget()
         v.addWidget(self.tabs, 1)
         self.tabs.addTab(self._tab_status(), "Estado")
+        self.tabs.addTab(self._tab_voice_vision(), "Voz y visión")
         self.tabs.addTab(self._tab_history(), "Historial")
         self.tabs.addTab(self._tab_memory(), "Memoria")
         self.tabs.addTab(self._tab_tools(), "Herramientas")
+        self.tabs.addTab(self._tab_permissions(), "Permisos")
         self.tabs.addTab(self._tab_audit(), "Seguridad")
         self.tabs.currentChanged.connect(self._tab_changed)
         self.banner = QLabel()
@@ -188,6 +190,55 @@ class Panel(QMainWindow):
         g.setRowStretch(7, 1)
         return w
 
+    def _tab_voice_vision(self) -> QWidget:
+        w = QWidget()
+        g = QGridLayout(w)
+        self.voice_lbl = QLabel("-")
+        self.voice_lbl.setWordWrap(True)
+        self.vision_lbl = QLabel("-")
+        self.vision_lbl.setWordWrap(True)
+        g.addWidget(QLabel("<b>Voz</b>"), 0, 0)
+        g.addWidget(self.voice_lbl, 1, 0, 1, 2)
+        btns = QHBoxLayout()
+        self.talk_btn = QPushButton("Hablar ahora")
+        self.talk_btn.clicked.connect(lambda: self.link.command("talk", self._cmd_done))
+        self.talk_btn.setToolTip("Equivale al atajo: escucha ya, o interrumpe si está respondiendo")
+        btns.addWidget(self.talk_btn)
+        btns.addStretch(1)
+        g.addLayout(btns, 2, 0, 1, 2)
+        g.addWidget(QLabel("<b>Visión y gestos</b>"), 3, 0)
+        g.addWidget(self.vision_lbl, 4, 0, 1, 2)
+        g.addWidget(QLabel("Últimos gestos"), 5, 0)
+        self.gesture_list = QListWidget()
+        g.addWidget(self.gesture_list, 6, 0, 1, 2)
+        g.setRowStretch(6, 1)
+        return w
+
+    def _tab_permissions(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        note = QLabel("Desde aquí solo se puede ENDURECER un permiso, y solo hasta que se cierre Piantao. "
+                      "Para aflojar uno, edita config/permissions.yaml.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#94a3b8;")
+        v.addWidget(note)
+        self.perm_table = _table()
+        self.perm_table.itemSelectionChanged.connect(self._perm_selection)
+        v.addWidget(self.perm_table, 1)
+        row = QHBoxLayout()
+        self.perm_btns: dict[str, QPushButton] = {}
+        for key, text, level in (("confirm", "Pedir confirmación", 3), ("explicit", "Confirmación explícita", 4),
+                                 ("never", "Bloquear", "never")):
+            b = QPushButton(text)
+            b.setEnabled(False)
+            b.clicked.connect(lambda _=False, lv=level: self._tighten(lv))
+            self.perm_btns[key] = b
+            row.addWidget(b)
+        row.addStretch(1)
+        v.addLayout(row)
+        self._perm_rows: list[dict[str, Any]] = []
+        return w
+
     def _tab_history(self) -> QWidget:
         sp = QSplitter()
         self.conv_list = QListWidget()
@@ -219,6 +270,20 @@ class Panel(QMainWindow):
         self.mcp_table = _table()
         self.mcp_table.setMaximumHeight(150)
         v.addWidget(self.mcp_table)
+        row = QHBoxLayout()
+        self.mcp_restart_btn = QPushButton("Reiniciar")
+        self.mcp_pause_btn = QPushButton("Pausar")
+        self.mcp_restart_btn.clicked.connect(lambda: self._mcp_cmd("mcp_restart"))
+        self.mcp_pause_btn.clicked.connect(lambda: self._mcp_cmd("mcp_pause"))
+        self.mcp_note = QLabel("Aprobar un servidor nuevo o con herramientas cambiadas se hace solo desde la terminal: "
+                               "python main.py mcp approve <nombre>")
+        self.mcp_note.setStyleSheet("color:#94a3b8;")
+        self.mcp_note.setWordWrap(True)
+        row.addWidget(self.mcp_restart_btn)
+        row.addWidget(self.mcp_pause_btn)
+        row.addWidget(self.mcp_note, 1)
+        v.addLayout(row)
+        self.mcp_table.itemSelectionChanged.connect(self._mcp_selection)
         v.addWidget(QLabel("Herramientas registradas"))
         self.tools_table = _table()
         v.addWidget(self.tools_table, 1)
@@ -273,8 +338,15 @@ class Panel(QMainWindow):
             f"Gestos: {'activos' if s.get('gestures_active') else 'inactivos'} · "
             f"Memoria: {'sí' if s.get('memory') else 'deshabilitada'} · Incógnito: {'sí' if s.get('incognito') else 'no'}")
         self.apply_resources(s.get("resources") or {})
+        self.apply_voice_vision(s.get("voice") or {}, s.get("vision") or {})
+        sel = self._selected_mcp()
         _fill_table(self.mcp_table, ["Servidor", "Estado", "Herramientas", "Detalle"],
                     [[m["name"], m["state"], m["tools"], m.get("detail")] for m in s.get("mcp", [])])
+        if sel:
+            for r in range(self.mcp_table.rowCount()):
+                if self.mcp_table.item(r, 0).text() == sel:
+                    self.mcp_table.selectRow(r)
+        self._mcp_selection()
         _fill_table(self.tools_table, ["Herramienta", "Origen", "Permiso", "Salida no confiable"],
                     [[t["name"], t["source"], t["action"], "sí" if t["untrusted"] else "no"] for t in s.get("tools", [])])
 
@@ -293,6 +365,87 @@ class Panel(QMainWindow):
         self.bars["gpu"].setVisible(bool(r.get("gpu_total_mib")))
         self.bars["util"].setVisible(bool(r.get("gpu_total_mib")))
 
+    def apply_voice_vision(self, v: dict[str, Any], vis: dict[str, Any]) -> None:
+        yn = lambda b: "sí" if b else "no"  # noqa: E731
+        if v:
+            c = v.get("confirm") or {}
+            mode = {"wake": f"palabra de activación «{v.get('wake_phrase')}»", "ptt": "pulsar para hablar",
+                    "always": "siempre escuchando"}.get(v.get("mode"), str(v.get("mode")))
+            self.voice_lbl.setText(
+                f"Modo: {mode}{' (servicio)' if v.get('headless') else ''}\nReconocimiento: {v.get('stt')} · Voz: {v.get('tts')}\n"
+                f"Confirmar permisos por voz: {'activado' if c.get('active') else 'desactivado'}"
+                f"{' · acciones sensibles: ' + yn(c.get('allow_explicit')) if c.get('enabled') else ''}"
+                f"{' · tras contenido externo: ' + yn(c.get('allow_tainted')) if c.get('enabled') else ''}")
+        else:
+            self.voice_lbl.setText("Sin datos de voz (¿Piantao corre en modo chat?)")
+        if vis:
+            self.vision_lbl.setText(
+                f"Gestos: {'activos' if vis.get('active') else 'inactivos'} · cámara {vis.get('device') or '-'} a {vis.get('fps') or '-'} fps\n"
+                f"Confirmar con gestos: {yn(vis.get('confirm_with_gestures'))} · palma abierta interrumpe: {yn(vis.get('interrupt_with_palm'))}")
+            self.gesture_list.clear()
+            for g in reversed(vis.get("recent") or []):
+                self.gesture_list.addItem(f"{_fmt_ts(g.get('ts'))}  {g.get('name')}")
+        else:
+            self.vision_lbl.setText("Sin datos de visión")
+
+    # -- MCP ---------------------------------------------------------------------------------------------------------
+    def _selected_mcp(self) -> str | None:
+        rows = self.mcp_table.selectionModel().selectedRows() if self.mcp_table.selectionModel() else []
+        return self.mcp_table.item(rows[0].row(), 0).text() if rows and self.mcp_table.item(rows[0].row(), 0) else None
+
+    def _mcp_selection(self) -> None:
+        on = self._selected_mcp() is not None and self.link.is_up
+        self.mcp_restart_btn.setEnabled(on)
+        self.mcp_pause_btn.setEnabled(on)
+
+    def _mcp_cmd(self, name: str) -> None:
+        server = self._selected_mcp()
+        if server:
+            self.link.command(name, self._mcp_done, server=server)
+
+    def _mcp_done(self, ok: bool, data: Any) -> None:
+        self._log(f"MCP: {data['name']} → {data['state']}" if ok else f"error MCP: {data}")
+        if self.link.is_up:
+            self.link.command("get_snapshot", lambda k, d: k and self.apply_snapshot(d))
+
+    # -- permisos ----------------------------------------------------------------------------------------------------
+    def _got_perms(self, ok: bool, data: Any) -> None:
+        if not ok:
+            _fill_table(self.perm_table, ["Error"], [[data]])
+            return
+        rows_sel = self.perm_table.selectionModel().selectedRows() if self.perm_table.selectionModel() else []
+        keep = self._perm_rows[rows_sel[0].row()]["action"] if rows_sel and rows_sel[0].row() < len(self._perm_rows) else None
+        self._perm_rows = data
+        names = {"auto": "automático", "confirm": "confirmación", "confirm_explicit": "confirmación explícita", "never": "bloqueado"}
+        _fill_table(self.perm_table, ["Acción", "Política", "Nivel", "Esta sesión"],
+                    [[r["action"], names.get(r["policy"], r["policy"]), r["level"], "endurecido" if r["tightened"] else ""]
+                     for r in data])
+        if keep:
+            for i, r in enumerate(data):
+                if r["action"] == keep:
+                    self.perm_table.selectRow(i)
+        self._perm_selection()
+
+    def _perm_selection(self) -> None:
+        rows = self.perm_table.selectionModel().selectedRows() if self.perm_table.selectionModel() else []
+        policy = self._perm_rows[rows[0].row()]["policy"] if rows and rows[0].row() < len(self._perm_rows) else None
+        order = {"auto": 0, "confirm": 1, "confirm_explicit": 2, "never": 3}
+        cur = order.get(policy, 99)
+        for key, need in (("confirm", 1), ("explicit", 2), ("never", 3)):
+            self.perm_btns[key].setEnabled(policy is not None and cur < need and self.link.is_up)
+
+    def _tighten(self, level: Any) -> None:
+        rows = self.perm_table.selectionModel().selectedRows()
+        if rows:
+            self.link.command("tighten_permission", self._tightened, action=self._perm_rows[rows[0].row()]["action"], level=level)
+
+    def _tightened(self, ok: bool, data: Any) -> None:
+        if ok:
+            self._log("permiso endurecido (solo en esta sesión)")
+            self._got_perms(True, data)
+        else:
+            self._log(f"no se pudo endurecer: {data}")
+
     # ------------------------------------------------------------------ eventos
 
     def _log(self, text: str) -> None:
@@ -306,6 +459,8 @@ class Panel(QMainWindow):
         elif kind == "resources":
             self.apply_resources(data)
         elif kind == "settings":
+            if data.get("permissions") and self.tabs.tabText(self.tabs.currentIndex()) == "Permisos":
+                self.link.command("get_permissions", self._got_perms)
             if "reasoning" in data:
                 self.reasoning_cb.setCurrentText(str(data["reasoning"]))
             if "provider" in data:
@@ -321,6 +476,9 @@ class Panel(QMainWindow):
             self._permission(data)
         elif kind == "gesture":
             self._log(f"gesto: {data.get('name')}")
+            self.gesture_list.insertItem(0, f"{_fmt_ts(time.time())}  {data.get('name')}")
+            while self.gesture_list.count() > 8:
+                self.gesture_list.takeItem(self.gesture_list.count() - 1)
 
     def _permission(self, d: dict[str, Any]) -> None:
         if d.get("phase") == "request":
@@ -364,6 +522,10 @@ class Panel(QMainWindow):
                 json.dumps(d, ensure_ascii=False, indent=2) if ok else str(d)), kind="preferences")
         elif name == "Herramientas":
             self.link.command("query", self._got_tool_hist, kind="tool_history")
+        elif name == "Permisos":
+            self.link.command("get_permissions", self._got_perms)
+        elif name == "Voz y visión":
+            self.link.command("get_snapshot", lambda ok, d: ok and self.apply_snapshot(d))
         elif name == "Seguridad":
             self.refresh_audit()
 

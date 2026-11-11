@@ -15,6 +15,20 @@ from .server import Handler
 QUERIES = ("conversations", "messages", "memories", "tool_history", "audit", "preferences", "stats")
 
 
+def _safe(fn: Callable[[], dict[str, Any]] | None) -> dict[str, Any]:
+    try:
+        return dict(fn()) if fn else {}
+    except Exception:  # noqa: BLE001 - un dato de panel nunca debe romper el snapshot
+        return {}
+
+
+def _text(args: dict[str, Any], key: str, limit: int = 80) -> str:
+    v = args.get(key)
+    if not isinstance(v, str) or not v.strip() or len(v) > limit:
+        raise ValueError(f"'{key}' debe ser texto no vacio")
+    return v.strip()
+
+
 def _int(args: dict[str, Any], key: str, default: int, lo: int, hi: int) -> int:
     v = args.get(key, default)
     if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
@@ -24,7 +38,8 @@ def _int(args: dict[str, Any], key: str, default: int, lo: int, hi: int) -> int:
 
 def build_handlers(router: Any, agent: Any, bus: Any, audit_path: Path | str | None = None, voice: Any = None,
                    hub: Any = None, resources: Any = None, mode: str = "voice",
-                   clock: Callable[[], float] = time.time) -> tuple[Callable[[], dict[str, Any]], dict[str, Handler]]:
+                   clock: Callable[[], float] = time.time, voice_info: Callable[[], dict[str, Any]] | None = None,
+                   vision_info: Callable[[], dict[str, Any]] | None = None) -> tuple[Callable[[], dict[str, Any]], dict[str, Handler]]:
     started = clock()
 
     def snapshot() -> dict[str, Any]:
@@ -41,6 +56,7 @@ def build_handlers(router: Any, agent: Any, bus: Any, audit_path: Path | str | N
             "mcp": [{"name": s.name, "state": s.state, "detail": s.detail, "tools": len(s.tools)}
                     for s in (mcp.status() if mcp else [])],
             "resources": dict(resources.last) if resources else {},
+            "voice": _safe(voice_info), "vision": _safe(vision_info),
         }
 
     async def ping(args: dict[str, Any]) -> str:
@@ -54,6 +70,37 @@ def build_handlers(router: Any, agent: Any, bus: Any, audit_path: Path | str | N
 
     async def talk(args: dict[str, Any]) -> bool:
         return bool(voice.talk()) if voice is not None and hasattr(voice, "talk") else False
+
+    def _perms() -> Any:
+        pm = getattr(getattr(agent, "tools", None), "permissions", None)
+        if pm is None or not hasattr(pm, "matrix"):
+            raise ValueError("la gestion de permisos no esta disponible")
+        return pm
+
+    async def get_permissions(args: dict[str, Any]) -> list[dict[str, Any]]:
+        return _perms().matrix()
+
+    async def tighten_permission(args: dict[str, Any]) -> list[dict[str, Any]]:
+        pm = _perms()
+        level = args.get("level")
+        pm.tighten(_text(args, "action"), level)  # valida que sea mas estricto; aflojar no existe por aqui
+        bus.publish("settings", permissions="tightened")
+        return pm.matrix()
+
+    def _mcp() -> Any:
+        mcp = getattr(agent, "mcp", None)
+        if mcp is None:
+            raise ValueError("MCP no esta disponible")
+        return mcp
+
+    def _srv(st: Any) -> dict[str, Any]:
+        return {"name": st.name, "state": st.state, "detail": st.detail, "tools": len(st.tools)}
+
+    async def mcp_pause(args: dict[str, Any]) -> dict[str, Any]:
+        return _srv(await _mcp().pause(_text(args, "server")))
+
+    async def mcp_restart(args: dict[str, Any]) -> dict[str, Any]:
+        return _srv(await _mcp().restart(_text(args, "server")))
 
     async def set_reasoning(args: dict[str, Any]) -> str:
         if agent.reasoning is None:
@@ -104,4 +151,6 @@ def build_handlers(router: Any, agent: Any, bus: Any, audit_path: Path | str | N
         return mem.stats()
 
     return snapshot, {"ping": ping, "get_snapshot": get_snapshot, "interrupt": interrupt, "talk": talk,
+                      "get_permissions": get_permissions, "tighten_permission": tighten_permission,
+                      "mcp_pause": mcp_pause, "mcp_restart": mcp_restart,
                       "set_reasoning": set_reasoning, "select_model": select_model, "query": query}

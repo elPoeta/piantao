@@ -351,13 +351,15 @@ async def _chat_loop(cfg: dict, router: ModelRouter, agent: AgentCore) -> int:
             print("Aviso: la memoria fallo y esta conversacion puede no haberse guardado (ver logs/piantao.log).\n")
 
 
-async def start_ui(cfg: dict, bus: EventBus, router: ModelRouter, agent: AgentCore, loop, hub: GestureHub):
+async def start_ui(cfg: dict, bus: EventBus, router: ModelRouter, agent: AgentCore, loop, hub: GestureHub,
+                   voice_info=None, vision_info=None):
     """Servidor local del panel + monitor de recursos. Si falla, Piantao sigue sin panel."""
     ipc = cfg["ui"].get("ipc") or {}
     if not ipc.get("enabled", True):
         return None, None
     monitor = ResourceMonitor(bus, float(ipc.get("resources_interval_s", 2)))
-    snapshot, handlers = build_handlers(router, agent, bus, audit_path(cfg, PROJECT_ROOT), loop, hub, monitor)
+    snapshot, handlers = build_handlers(router, agent, bus, audit_path(cfg, PROJECT_ROOT), loop, hub, monitor,
+                                           voice_info=voice_info, vision_info=vision_info)
     server = UiServer(bus, snapshot, handlers, ipc.get("socket"))
     try:
         await server.start()
@@ -546,7 +548,24 @@ async def voice(cfg: dict, provider: str | None, model: str | None, resume_last:
                      meta={"provider": st["provider"], "model": st["model"], "stt": f"{stt.config.model}/{stt_device}",
                            **({"tag": tag} if tag else {})})
     hub.on_interrupt = loop.interrupt
-    ui_server, monitor = await start_ui(cfg, bus, router, agent, loop, hub)
+    def voice_info() -> dict:
+        wake = cfg["voice"].get("wake_word") or {}
+        tts = cfg["voice"].get("tts") or {}
+        return {"mode": loop.mode, "wake_phrase": wake.get("phrase") if loop.mode == "wake" else None,
+                "stt": f"{stt.config.model}/{stt_device}", "tts": tts.get("engine"),
+                "confirm": {"enabled": vcfg.enabled, "active": vconf.active, "allow_explicit": vcfg.allow_explicit,
+                            "allow_tainted": vcfg.allow_tainted},
+                "headless": headless}
+
+    def vision_info() -> dict:
+        v = cfg.get("vision") or {}
+        cam = v.get("camera") or {}
+        recent = [{"ts": round(e.ts), "name": e.data.get("name")} for e in bus.recent("gesture")[-8:]]
+        return {"active": bool(hub.active), "device": cam.get("device"), "fps": cam.get("fps"),
+                "confirm_with_gestures": bool(hub.policy.confirm_with_gestures),
+                "interrupt_with_palm": bool(hub.policy.interrupt_with_palm), "recent": recent}
+
+    ui_server, monitor = await start_ui(cfg, bus, router, agent, loop, hub, voice_info, vision_info)
     shortcuts = await start_shortcuts(cfg, getattr(agent, "portal", None), keys, loop)
     try:
         return await loop.run()
