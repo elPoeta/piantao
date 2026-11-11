@@ -12,3 +12,6 @@ workspace/*
 *.sqlite
 data/*
 !data/.gitkeep
+
+web/node_modules
+
