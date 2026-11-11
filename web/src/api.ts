@@ -32,6 +32,8 @@ export class Link {
   private closed = false;
   onSnapshot: (s: Snapshot) => void = () => {};
   onEvent: (e: PiantaoEvent) => void = () => {};
+  onChat: (m: Record<string, any>) => void = () => {};
+  onConfirm: (m: Record<string, any>) => void = () => {};
   onStatus: (s: "connecting" | "open" | "closed" | "unauthorized") => void = () => {};
 
   connect(): void {
@@ -46,6 +48,8 @@ export class Link {
       try { msg = JSON.parse(m.data); } catch { return; }
       if (msg.t === "snapshot") this.onSnapshot(msg.data);
       else if (msg.t === "event") this.onEvent({ kind: msg.kind, data: msg.data, ts: msg.ts });
+      else if (msg.t === "chat") this.onChat(msg);
+      else if (msg.t === "confirm" || msg.t === "confirm_done") this.onConfirm(msg);
       else if (msg.t === "reply") this.settle(msg);
     };
     ws.onclose = async () => {

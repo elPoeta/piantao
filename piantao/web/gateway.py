@@ -48,6 +48,7 @@ class WebGateway:
         self.sessions, self.pairing, self._audit = sessions, pairing, audit
         self.static = Path(cfg.static_dir) if cfg.static_dir else STATIC
         self.port = cfg.port
+        self.chat: Any = None
         self._runner: web.AppRunner | None = None
         self._clients: set["_WsClient"] = set()
         self._unsub: Callable[[], None] | None = None
@@ -199,6 +200,14 @@ class WebGateway:
     def _fanout(self, msg: dict[str, Any]) -> None:
         for c in list(self._clients):
             c.send(msg)
+
+    def broadcast(self, msg: dict[str, Any]) -> None:
+        """Envia un mensaje a todos los navegadores conectados (solo desde el hilo del bucle)."""
+        self._fanout(msg)
+
+    @property
+    def clients(self) -> int:
+        return len(self._clients)
 
     def kick(self, sid: str | None = None) -> None:
         """Cierra conexiones (todas, o las de una sesion revocada)."""

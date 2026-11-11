@@ -40,7 +40,7 @@ from piantao.models import ModelRouter, RouterError
 from piantao.providers import ProviderError, ToolCall
 from piantao.tools import ToolRegistry, ToolsConfig, register_builtin
 from piantao.mcp import McpConfig, McpManager
-from piantao.web import PairingManager, SessionStore, WebConfig, WebGateway
+from piantao.web import ChatSession, PairingManager, SessionStore, WebConfig, WebConfirmer, WebGateway
 from piantao.security import AuditError, AuditLog, PermissionManager, audit_path, read_tail, verify_chain
 
 HELP = """Comandos:
@@ -388,7 +388,7 @@ async def start_shortcuts(cfg: dict, portal, keys, loop):
     return svc
 
 
-async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None = None):
+async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None = None, confirmer: WebConfirmer | None = None):
     """Servicio web en localhost. Reutiliza el mismo estado y comandos que el panel; si falla, Piantao sigue sin web."""
     wcfg = WebConfig.from_config(cfg)
     if not wcfg.enabled:
@@ -412,6 +412,12 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         gw.kick()
         return {"revoked": n}
 
+    chat = None
+    if agent is not None and confirmer is not None:
+        chat = ChatSession(agent, bus, gw.broadcast, confirmer)
+        confirmer.broadcast, confirmer.has_clients = gw.broadcast, lambda: gw.clients > 0
+        gw.handlers.update(chat.handlers())  # solo web: el socket del panel no puede chatear ni confirmar
+    gw.chat = chat
     ui_server.handlers["pair_code"] = pair_code  # solo por el socket privado, nunca por la web
     ui_server.handlers["web_revoke_all"] = revoke_sessions
     try:
@@ -428,16 +434,20 @@ async def serve(cfg: dict, provider: str | None, model: str | None, resume_last:
     """Piantao como servicio: agente + panel local + web (sin voz local; la voz llega por el navegador en la fase W2)."""
     import signal
 
-    built = build_agent(cfg, provider, model, confirmer=deny_without_keyboard)  # las confirmaciones por web llegan en W1
+    bus = EventBus()
+    web_confirm = WebConfirmer(bus, timeout_s=float((cfg["voice"].get("confirm") or {}).get("service_timeout_s", 120)))
+    announcing = make_announcing_confirmer(web_confirm, bus, lambda _r, _e: ["web"])
+    built = build_agent(cfg, provider, model, confirmer=announcing)
     if built is None:
         return 1
     router, agent, memory = built
     loop = asyncio.get_running_loop()
-    bus = EventBus()
+    if resume_last and memory is not None and memory.last_conversation_id() is not None:
+        print(f"Retomada la conversacion #{memory.last_conversation_id()} ({agent.resume(memory.last_conversation_id())} mensajes).")
     hub = None  # sin gestos locales: la vision llega por el navegador (fase W3)
     await start_mcp(agent)
     ui_server, monitor = await start_ui(cfg, bus, router, agent, None, hub)
-    gw = await start_web(cfg, bus, ui_server, agent)
+    gw = await start_web(cfg, bus, ui_server, agent, web_confirm)
     if gw is None:
         if ui_server is not None:
             await ui_server.stop()
@@ -452,6 +462,8 @@ async def serve(cfg: dict, provider: str | None, model: str | None, resume_last:
     try:
         await stop.wait()
     finally:
+        if gw.chat is not None:
+            await gw.chat.stop()
         await gw.stop()
         await ui_server.stop()
         if monitor is not None:

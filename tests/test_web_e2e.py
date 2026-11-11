@@ -65,11 +65,12 @@ def test_pair_from_url_hash_shows_live_shell_without_csp_violations(browser, tmp
         page.goto(srv.gw.pair_url(srv.code()))
         page.wait_for_selector("text=conectado", timeout=8000)
         assert page.locator("h1").first.inner_text() == "Piantao"
+        page.click("role=tab[name='Estado']")
         assert "bolt-4b" in page.inner_text("body")
         assert "pair=" not in page.url  # el codigo se borra de la barra
         assert page.evaluate("document.cookie") == ""  # la cookie es HttpOnly
         srv.bus.publish("state", state="thinking")
-        page.wait_for_selector("text=Pensando", timeout=5000)
+        page.wait_for_selector("header >> text=Pensando", timeout=5000)
         assert not [p for p in problems if "Content Security Policy" in p or "Refused" in p], problems
         assert problems == [], problems
 
@@ -109,3 +110,117 @@ def test_other_origin_cannot_use_the_service(browser, tmp_path):
               return out; }""", srv.gw.url)
         assert res["ws"] != "open"
         assert "paired" not in res.get("body", "")
+
+
+# ---- chat (W1) ----------------------------------------------------------------------------------------------------
+class ChatServer(Server):
+    def __init__(self, tmp_path, script):
+        from types import SimpleNamespace as NS
+        from piantao.core.agent import AgentEvent
+        from piantao.web import ChatSession, WebConfirmer
+        super().__init__(tmp_path)
+        self.AgentEvent, self.NS = AgentEvent, NS
+        self.hist = []
+        outer = self
+
+        class Agent:
+            conversation_id = None
+            history = outer.hist
+
+            async def respond(self, text, **_):
+                self.history.append({"role": "user", "content": text})
+                async for ev in script(outer, text):
+                    yield ev
+                yield AgentEvent("done")
+
+            def reset(self):
+                self.history.clear()
+
+        self.confirm = WebConfirmer(self.bus, timeout_s=30)
+        self.chat = ChatSession(Agent(), self.bus, self.gw.broadcast, self.confirm)
+        self.confirm.broadcast, self.confirm.has_clients = self.gw.broadcast, lambda: self.gw.clients > 0
+        self.gw.handlers.update(self.chat.handlers())
+
+
+def pair_and_open(page, srv):
+    page.goto(srv.gw.pair_url(srv.code()))
+    page.wait_for_selector("text=conectado", timeout=8000)
+
+
+def test_chat_streams_renders_markdown_safely_and_blocks_xss(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="Hola **mundo** `x`\n\n- uno\n- dos\n\n")
+        yield srv.AgentEvent("text", text="<img src=x onerror=window.__pwned=1> [malo](javascript:window.__pwned=2) [bien](https://example.com)\n")
+        yield srv.AgentEvent("text", text="```\n<script>window.__pwned=3</script>\n```")
+
+    with ChatServer(tmp_path, script) as srv:
+        page = browser.new_page()
+        problems = []
+        page.on("pageerror", lambda e: problems.append(str(e)))
+        pair_and_open(page, srv)
+        page.fill("textarea", "hola")
+        page.keyboard.press("Enter")
+        page.wait_for_selector(".bubble-assistant strong")
+        page.wait_for_selector(".bubble-assistant pre.codeblock")
+        assert page.inner_text(".bubble-user") == "hola"
+        assert page.locator(".bubble-assistant li").count() == 2
+        assert page.evaluate("window.__pwned") is None
+        assert page.locator(".bubble-assistant img, .bubble-assistant script").count() == 0
+        links = page.locator(".bubble-assistant a")
+        assert links.count() == 1 and links.first.get_attribute("href") == "https://example.com"
+        assert "<img src=x" in page.inner_text(".bubble-assistant")  # se ve como texto, no se interpreta
+        assert problems == []
+        page.reload()  # el historial vuelve al reconectar
+        page.wait_for_selector(".bubble-user")
+
+
+def test_permission_modal_explicit_phrase_and_deny_default_focus(browser, tmp_path):
+    from piantao.security import ActionRequest
+    results = {}
+
+    async def script(srv, text):
+        ok = await srv.confirm(ActionRequest(kind="shell_exec", description="Borrar todo", details={"tool": "run_command"},
+                                             payload="rm -rf <b>x</b>", origin="model", tainted=True), True)
+        results["explicit"] = ok
+        ok2 = await srv.confirm(ActionRequest(kind="web_fetch", description="Leer una pagina", origin="model"), False)
+        results["plain"] = ok2
+        yield srv.AgentEvent("text", text="listo")
+
+    with ChatServer(tmp_path, script) as srv:
+        page = browser.new_page()
+        pair_and_open(page, srv)
+        page.fill("textarea", "hacelo")
+        page.keyboard.press("Enter")
+        page.wait_for_selector("[role=alertdialog]")
+        page.wait_for_function("document.activeElement && document.activeElement.textContent === 'Denegar'", timeout=3000)
+        assert "contenido no confiable" in page.inner_text(".dialog")
+        assert page.inner_text("pre.payload") == "rm -rf <b>x</b>"  # texto plano
+        allow = page.locator("button", has_text="Autorizar")
+        assert allow.is_disabled()
+        page.fill(".dialog input", "confirmar")
+        assert allow.is_disabled()
+        page.fill(".dialog input", "CONFIRMAR")
+        allow.click()
+        page.wait_for_selector("text=Leer una pagina")
+        page.keyboard.press("Escape")  # Esc = denegar
+        page.wait_for_selector(".bubble-assistant:has-text('listo')", timeout=8000)
+        assert results == {"explicit": True, "plain": False}
+
+
+def test_stop_button_interrupts_turn(browser, tmp_path):
+    import asyncio as aio
+
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="empiezo...")
+        await aio.sleep(30)
+        yield srv.AgentEvent("text", text="jamas")
+
+    with ChatServer(tmp_path, script) as srv:
+        page = browser.new_page()
+        pair_and_open(page, srv)
+        page.fill("textarea", "largo")
+        page.keyboard.press("Enter")
+        page.wait_for_selector("text=empiezo")
+        page.click("text=Detener")
+        page.wait_for_selector("text=(interrumpido)")
+        assert page.locator("button", has_text="Enviar").is_visible()
