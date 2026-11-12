@@ -535,3 +535,130 @@ def test_synthetic_landmarks_over_real_websocket_drive_palm_and_confirmation(bro
         # basura binaria: se ignora y la conexion sigue viva
         page.evaluate("window.__ws.send(new Uint8Array([3, 1, 2, 3]))")
         assert page.evaluate("window.__cmd('vision_info', {}).then(r => r.ok)") is True
+
+
+# ---- holograma (W4) -----------------------------------------------------------------------------------------------
+PNG_1PX = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea75b81e30000000049454e44ae426082")
+
+
+class BoardServer(ChatServer):
+    def __init__(self, tmp_path, script):
+        from piantao.web import Board
+
+        super().__init__(tmp_path, script)
+        media = tmp_path / "media"
+        media.mkdir(exist_ok=True)
+        (media / "foto.png").write_bytes(PNG_1PX)
+        self.board = Board(media, self.gw.broadcast, lambda: self.gw.clients > 0)
+        self.gw.board = self.board
+        self.gw.handlers.update(self.board.handlers())
+
+        async def query(args):
+            return [{"ts": 1.0, "tool": "web_fetch", "decision": "allow"}]
+
+        self.gw.handlers["query"] = query
+
+    def add(self, **kw):
+        done = threading.Event()
+
+        def go():
+            self.board.add(**kw)
+            done.set()
+
+        self.loop.call_soon_threadsafe(go)
+        assert done.wait(5)
+
+
+def _bright(png: bytes, x0, y0, x1, y1) -> int:
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    im = Image.open(io.BytesIO(png)).convert("RGB").crop((x0, y0, x1, y1))
+    return sum(1 for px in im.getdata() if sum(px) > 150)
+
+
+def open_holo(page, srv):
+    problems = []
+    page.on("pageerror", lambda e: problems.append(str(e)))
+    page.on("console", lambda m: problems.append(m.text) if m.type == "error" else None)
+    pair_and_open(page, srv)
+    page.click("role=tab[name='Holo']")
+    page.wait_for_selector("canvas.holo-scene")
+    return problems
+
+
+def test_holo_shows_cards_from_the_agent_draws_them_and_closing_reaches_the_server(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with BoardServer(tmp_path, script) as srv:
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = open_holo(page, srv)
+        assert page.locator(".holo-list summary").inner_text() == "Tarjetas (0)"
+        srv.add(title="Resumen <b>x</b>", text="Hola mundo " * 8, image="foto.png")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
+        page.wait_for_timeout(400)
+        assert _bright(page.screenshot(), 60, 230, 360, 420) > 500  # la tarjeta se dibujo en el canvas WebGL
+        page.click(".holo-list summary")
+        assert "Resumen <b>x</b>" in page.inner_text(".holo-list li")  # texto plano
+        assert page.evaluate("window.__pwned") is None
+        page.click(".holo-list li button")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (0)')")
+        for _ in range(50):
+            if not srv.board.cards:
+                break
+            page.wait_for_timeout(100)
+        assert srv.board.cards == {}
+        page.wait_for_timeout(300)
+        assert _bright(page.screenshot(), 60, 230, 360, 420) < 200
+        assert problems == [], problems
+
+
+def test_holo_mouse_drags_a_card_and_orbit_opens_a_system_card(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with BoardServer(tmp_path, script) as srv:
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = open_holo(page, srv)
+        srv.add(title="Arrastrame", text="contenido")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
+        page.wait_for_timeout(400)
+        before = page.screenshot()
+        assert _bright(before, 60, 230, 360, 340) > 300
+        page.mouse.move(200, 300); page.mouse.down()
+        for i in range(1, 21):
+            page.mouse.move(200 + i * 30, 300 + i * 5)
+            page.wait_for_timeout(16)
+        page.mouse.up()
+        page.wait_for_timeout(600)
+        after = page.screenshot()
+        assert _bright(after, 60, 230, 360, 340) < 120          # ya no esta en su lugar
+        assert _bright(after, 700, 300, 1000, 460) > 300        # esta donde la soltamos
+        # orbita "Auditoria": a la derecha del anillo (centro 640, y 110) -> 752
+        page.mouse.move(752, 110); page.wait_for_timeout(80); page.mouse.down(); page.wait_for_timeout(50); page.mouse.up()
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (2)')")
+        page.click(".holo-list summary")
+        assert "Auditoría reciente" in page.inner_text(".holo-list")
+        assert srv.board.cards and len(srv.board.cards) == 1    # la tarjeta de sistema es local: no se guarda en el servidor
+        assert problems == [], problems
+
+
+def test_chat_answer_can_be_pinned_as_a_card(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="# Plan\n\n- paso uno\n- paso dos")
+
+    with BoardServer(tmp_path, script) as srv:
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        pair_and_open(page, srv)
+        page.fill("textarea", "hacelo")
+        page.keyboard.press("Enter")
+        page.click("text=Sacar a tarjeta")
+        for _ in range(50):
+            if srv.board.cards:
+                break
+            page.wait_for_timeout(100)
+        (card,) = srv.board.cards.values()
+        assert card["origin"] == "user" and card["title"] == "Plan" and "paso uno" in card["text"]
+        page.click("role=tab[name='Holo']")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")

@@ -52,6 +52,7 @@ class WebGateway:
         self.chat: Any = None
         self.voice: Any = None
         self.vision: Any = None
+        self.board: Any = None
         self.hand_model: Path | None = None  # modelo de manos de MediaPipe (se sirve desde models/, no va en el parche)
         self.ctx_handlers: dict[str, Callable[[dict[str, Any], Any], Awaitable[Any]]] = {}  # reciben tambien la conexion
         self.binary_handler: Callable[[Any, bytes], None] | None = None   # por defecto
@@ -71,6 +72,7 @@ class WebGateway:
         app.add_routes([
             web.get("/", self._index), web.get("/api/session", self._session), web.post("/api/pair", self._pair),
             web.post("/api/logout", self._logout), web.get("/ws", self._ws), web.get("/vision/hand_landmarker.task", self._hand_model),
+            web.get("/media/{name}", self._media),
         ])
         if (self.static / "mediapipe").is_dir():
             app.router.add_static("/mediapipe", self.static / "mediapipe", follow_symlinks=False)
@@ -150,6 +152,18 @@ class WebGateway:
         if f is None or not f.is_file():
             return web.Response(status=404, text="falta el modelo de manos: python scripts/fetch_models.py")
         return web.FileResponse(f, headers={"Content-Type": "application/octet-stream"})
+
+    async def _media(self, request: web.Request) -> web.StreamResponse:
+        """Imagenes de media/ para el tablero: solo con sesion y solo las que el tablero sabe servir."""
+        if self._sid(request) is None:
+            return web.Response(status=401, text="sin sesion")
+        if self.board is None:
+            return web.Response(status=404, text="sin tablero")
+        try:
+            path = self.board.resolve_image(request.match_info["name"])
+        except ValueError:
+            return web.Response(status=404, text="imagen no disponible")
+        return web.FileResponse(path, headers={"Content-Type": self.board.image_type(path.name), "Cache-Control": "private, max-age=60"})
 
     async def _session(self, request: web.Request) -> web.Response:
         return web.json_response({"paired": self._sid(request) is not None, "v": VERSION})

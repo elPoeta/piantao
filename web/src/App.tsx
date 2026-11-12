@@ -8,9 +8,10 @@ import { VoiceClient, VoiceMode } from "./voice";
 import { VisionClient } from "./vision";
 import { VisionBar, VisionUi } from "./VisionBar";
 import { Skills } from "./Skills";
+import type { BoardCard, Holo as HoloT } from "./Holo";
 
 type Status = "connecting" | "open" | "closed" | "unauthorized";
-type Tab = "chat" | "skills" | "estado";
+type Tab = "chat" | "holo" | "skills" | "estado";
 const STATE_LABEL: Record<string, string> = { idle: "En reposo", listening: "Escuchando", thinking: "Pensando", speaking: "Hablando", acting: "Actuando", confirming: "Esperando tu permiso" };
 
 export function App() {
@@ -30,6 +31,10 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   const [busy, setBusy] = useState(false);
   const [confirms, setConfirms] = useState<ConfirmReq[]>([]);
   const [notice, setNotice] = useState("");
+  const [board, setBoard] = useState<BoardCard[]>([]);
+  const [HoloView, setHoloView] = useState<typeof HoloT | null>(null);
+  // three.js pesa: se descarga solo al abrir la pestaña Holo
+  useEffect(() => { if (tab === "holo" && !HoloView) void import("./Holo").then((m) => setHoloView(() => m.Holo)); }, [tab]);
   const link = useRef<Link>();
   const voice = useRef<VoiceClient>();
   const [vui, setVui] = useState<VoiceUi>({ available: false, state: "off", detail: "", level: 0, mode: "ptt", error: "", last: "", readAloud: false, bargeIn: false });
@@ -68,10 +73,16 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
     l.onVoice = (m) => vc.handle(m);
     l.onBinary = (d) => vc.handleBinary(d);
     l.onSnapshot = setSnap;
+    l.onBoard = (m) => {
+      if (m.ev === "add") setBoard((b) => (b.some((c) => c.id === m.card.id) ? b : [...b, m.card as BoardCard]));
+      else if (m.ev === "remove") setBoard((b) => b.filter((c) => c.id !== m.id));
+      else if (m.ev === "clear") setBoard([]);
+    };
     l.onStatus = (s) => {
       setStatus(s);
       if (s === "open") {
         void loadHistory(l);
+        l.command("board_state").then((c) => setBoard(c as BoardCard[])).catch(() => setBoard([]));
         l.command("vision_info").then((i) => patchVis({ available: true, calibrated: !!i.calibrated })).catch(() => patchVis({ available: false }));
         l.command("voice_info").then((i) => patchVoice({ available: true, bargeIn: !!i.barge_in })).catch(() => patchVoice({ available: false }));
       } else {
@@ -105,6 +116,9 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   const applyCal = async () => { const r = await vision.current!.applyCalibration(); patchVis({ calibrated: true }); return `Calibración aplicada y guardada (${r.finger_curled} / ${r.finger_extended}).`; };
   const send = (t: string) => run(link.current?.command("chat_send", { text: t, speak: vui.readAloud && vui.state !== "off" }));
   const toggleMic = () => run(vui.state === "off" ? voice.current?.start(vui.mode) : voice.current?.stop());
+  const closeCard = (id: string) => { setBoard((b) => b.filter((c) => c.id !== id)); run(link.current?.command("board_close", { id })); };
+  const clearBoard = () => { setBoard([]); run(link.current?.command("board_clear")); };
+  const pin = (text: string) => run(link.current?.command("board_add", { title: (text.split("\n").find((x) => x.trim()) ?? "Respuesta").replace(/[#*_`>]/g, "").trim().slice(0, 60) || "Respuesta", text: text.slice(0, 4000) }));
   const stop = () => run(link.current?.command("chat_interrupt"));
   const fresh = () => run(link.current?.command("chat_new").then(() => setMsgs([])));
   const answer = (id: string, allow: boolean, phrase?: string) =>
@@ -124,13 +138,13 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
         <div class={`orb orb-${state}`} aria-hidden="true" />
         <div class="title"><h1>Piantao</h1><span class="state" aria-live="polite">{STATE_LABEL[state] ?? state}</span></div>
         <nav class="tabs" role="tablist">
-          {(["chat", "skills", "estado"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : t === "skills" ? "Skills" : "Estado"}</button>)}
+          {(["chat", "holo", "skills", "estado"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : t === "holo" ? "Holo" : t === "skills" ? "Skills" : "Estado"}</button>)}
         </nav>
         <span class={`pill pill-${status}`}>{status === "open" ? "conectado" : status === "connecting" ? "conectando" : "reconectando"}</span>
         <button class="ghost" onClick={onLogout}>Cerrar sesion</button>
       </header>
       {notice && <p class="notice" role="alert">{notice}</p>}
-      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh}
+      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} onPin={pin}
         extra={<><VisionBar ui={vis} onToggle={toggleCam} onVideo={(v, c) => vision.current?.attach(v, c)} onCalibrate={calibrate} onApply={applyCal} /><VoiceBar ui={vui} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggle={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))}
           onStop={() => run(voice.current?.interrupt())} onReadAloud={(readAloud) => patchVoice({ readAloud })} /></>} /> : (
         <main class="grid">
@@ -147,6 +161,10 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
           </section>
         </main>
       )}
+      {tab === "holo" && link.current && vision.current && (HoloView ? (
+        <HoloView link={link.current} vision={vision.current} vis={vis} vui={vui} state={state} connected={status === "open"} cards={board} msgs={msgs} busy={busy}
+          onCloseCard={closeCard} onClearBoard={clearBoard} onSend={send} onStop={stop} onToggleMic={toggleMic} onToggleCam={toggleCam} onExit={() => setTab("chat")} />
+      ) : <p class="muted">Cargando el holograma...</p>)}
       {confirms.length > 0 && <ConfirmModal key={confirms[0].id} req={confirms[0]} onAnswer={(allow, phrase) => answer(confirms[0].id, allow, phrase)} />}
     </div>
   );

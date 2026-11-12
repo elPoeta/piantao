@@ -47,10 +47,16 @@ export class VisionClient {
   private lastSent = 0;
   private lastTs = -1;
   private connections: { start: number; end: number }[] = [];
+  /** La escena holografica se suscribe aqui para recibir las manos (hasta 2) y decide si es dueña de ellas (pellizco en curso). */
+  hands: ((hands: { x: number; y: number }[][], aspect: number) => void) | null = null;
+  owner: (() => boolean) | null = null;
   state: VisionState = "off";
   constructor(private link: Link, private h: VisionHandlers) {}
 
-  attach(video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null): void { this.video = video; this.canvas = canvas; }
+  attach(video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null): void {
+    this.video = video; this.canvas = canvas;
+    if (video && this.stream && video.srcObject !== this.stream) { video.srcObject = this.stream; void video.play().catch(() => {}); }
+  }
 
   async start(): Promise<void> {
     if (this.state !== "off") return;
@@ -86,7 +92,7 @@ export class VisionClient {
       const fileset = await FilesetResolver.forVisionTasks("/mediapipe");
       this.landmarker = await HandLandmarker.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: "/vision/hand_landmarker.task", delegate: "CPU" }, // CPU: la GPU se la queda el modelo de lenguaje
-        runningMode: "VIDEO", numHands: 1, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+        runningMode: "VIDEO", numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
       });
     } catch (e) {
       throw new Error(`No se pudo cargar el modelo de manos (¿corriste «python scripts/fetch_models.py»?): ${(e as Error).message}`);
@@ -109,9 +115,12 @@ export class VisionClient {
       lm: pts, side: res.handedness[i]?.[0]?.categoryName ?? "?", score: res.handedness[i]?.[0]?.score ?? 0.5,
     }));
     this.draw(hands.length ? hands[0].lm : null);
-    if (hands.length === 0 && now - this.lastSent < 1000 / IDLE_FPS) return;
+    this.hands?.(hands.map((h) => h.lm), v.videoWidth / Math.max(1, v.videoHeight));
+    // al servidor viaja UNA mano, y ninguna mientras la escena manipula tarjetas con un pellizco (no es un gesto)
+    const send = this.owner?.() ? [] : hands.slice(0, 1);
+    if (send.length === 0 && now - this.lastSent < 1000 / IDLE_FPS) return;
     this.lastSent = now;
-    this.link.sendBinary(packLandmarks(hands, true));
+    this.link.sendBinary(packLandmarks(send, true));
   };
 
   private draw(pts: NormalizedLandmark[] | null): void {

@@ -109,3 +109,18 @@ button.ptt { background: var(--ok); color: #04121a; touch-action: none; user-sel
 .gesture-toast { background: var(--accent); color: #04121a; border-radius: 999px; padding: 0.1rem 0.7rem; font-weight: 600; }
 .gesture-hint { color: var(--ok); margin: 0; }
 .calib { margin-top: 0.5rem; }
+
+/* holograma */
+.holo { position: fixed; inset: 0; z-index: 3; background: radial-gradient(ellipse at 50% 0%, #0d1b2a, #04070b 70%); overflow: hidden; }
+.holo-video, .holo-skel { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); pointer-events: none; transition: opacity 0.3s; }
+.holo-scene { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+.holo-top { position: absolute; top: 0.6rem; left: 0.6rem; right: 0.6rem; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.6rem; pointer-events: none; }
+.holo-top > * { pointer-events: auto; }
+.holo-list { background: #0b1118d9; border: 1px solid var(--line); border-radius: 8px; padding: 0.3rem 0.6rem; max-width: 22rem; }
+.holo-list summary { cursor: pointer; } .holo-list ul { list-style: none; margin: 0.4rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.holo-list li { display: flex; justify-content: space-between; gap: 0.6rem; align-items: center; overflow-wrap: anywhere; }
+.holo-help { align-self: center; background: #0b1118a0; border-radius: 6px; padding: 0.15rem 0.5rem; }
+.holo-caption { position: absolute; left: 50%; bottom: 4.6rem; transform: translateX(-50%); width: min(46rem, 92%); margin: 0; padding: 0.5rem 0.9rem; text-align: center; background: #0b1118cc; border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; pointer-events: none; }
+.holo-bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.7rem; background: linear-gradient(transparent, #04070bf0 40%); }
+.holo-input { flex: 1; min-width: 12rem; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; font: inherit; }
+.holo-err { position: absolute; left: 0.8rem; bottom: 4rem; margin: 0; background: #0b1118d9; padding: 0.2rem 0.6rem; border-radius: 6px; }

@@ -4,6 +4,7 @@ from .auth import PairingManager, SessionStore
 from .chat import ChatSession, WebConfirmer
 from .config import WebConfig, WebConfigError
 from .vision import WebVision
+from .board import Board, register_board
 from .gateway import WebGateway
 
-__all__ = ["WebVision", "ChatSession", "WebConfirmer", "PairingManager", "SessionStore", "WebConfig", "WebConfigError", "WebGateway"]
+__all__ = ["Board", "register_board", "WebVision", "ChatSession", "WebConfirmer", "PairingManager", "SessionStore", "WebConfig", "WebConfigError", "WebGateway"]

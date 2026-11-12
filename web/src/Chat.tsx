@@ -47,7 +47,8 @@ function ToolCard({ p }: { p: Extract<Part, { k: "tool" }> }) {
   );
 }
 
-function Bubble({ m }: { m: Msg }) {
+function Bubble({ m, onPin }: { m: Msg; onPin?: (text: string) => void }) {
+  const full = m.role === "assistant" && !m.streaming ? m.parts.filter((p) => p.k === "text").map((p) => (p as { t: string }).t).join("\n").trim() : "";
   return (
     <article class={`bubble bubble-${m.role}`}>
       {m.parts.map((p) => p.k === "text" ? (m.role === "assistant" ? <Markdown text={p.t} /> : <p class="plain">{p.t}</p>)
@@ -55,13 +56,14 @@ function Bubble({ m }: { m: Msg }) {
         : <ToolCard p={p} />)}
       {m.streaming && m.parts.length === 0 && <span class="muted">Pensando...</span>}
       {m.error && <p class="error" role="alert">{m.error}</p>}
+      {full && onPin && <button type="button" class="linklike small" onClick={() => onPin(full)}>Sacar a tarjeta</button>}
       {m.outcome === "interrupted" && <p class="muted small">(interrumpido)</p>}
     </article>
   );
 }
 
-export function Chat({ msgs, busy, connected, onSend, onStop, onNew, extra }:
-  { msgs: Msg[]; busy: boolean; connected: boolean; onSend: (t: string) => void; onStop: () => void; onNew: () => void; extra?: ComponentChildren }) {
+export function Chat({ msgs, busy, connected, onSend, onStop, onNew, onPin, extra }:
+  { msgs: Msg[]; busy: boolean; connected: boolean; onSend: (t: string) => void; onStop: () => void; onNew: () => void; onPin?: (text: string) => void; extra?: ComponentChildren }) {
   const [text, setText] = useState("");
   const list = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -79,7 +81,7 @@ export function Chat({ msgs, busy, connected, onSend, onStop, onNew, extra }:
       <div class="messages" ref={list} aria-live="polite"
         onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>
         {msgs.length === 0 && <p class="muted center">Escribile algo a Piantao.</p>}
-        {msgs.map((m) => <Bubble key={m.id} m={m} />)}
+        {msgs.map((m) => <Bubble key={m.id} m={m} onPin={onPin} />)}
       </div>
       {extra}
       <form class="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>

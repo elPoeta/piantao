@@ -36,6 +36,7 @@ export class Link {
   onVoice: (m: Record<string, any>) => void = () => {};
   onBinary: (d: ArrayBuffer) => void = () => {};
   onChat: (m: Record<string, any>) => void = () => {};
+  onBoard: (m: Record<string, any>) => void = () => {};
   onConfirm: (m: Record<string, any>) => void = () => {};
   onStatus: (s: "connecting" | "open" | "closed" | "unauthorized") => void = () => {};
 
@@ -53,6 +54,7 @@ export class Link {
       if (msg.t === "snapshot") this.onSnapshot(msg.data);
       else if (msg.t === "event") this.onEvent({ kind: msg.kind, data: msg.data, ts: msg.ts });
       else if (msg.t === "chat") this.onChat(msg);
+      else if (msg.t === "board") this.onBoard(msg);
       else if (msg.t === "voice") this.onVoice(msg);
       else if (msg.t === "vision") this.onVision(msg);
       else if (msg.t === "confirm" || msg.t === "confirm_done") this.onConfirm(msg);

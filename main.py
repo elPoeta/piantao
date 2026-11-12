@@ -427,6 +427,16 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         gw.handlers.update(chat.handlers())  # solo web: el socket del panel no puede chatear ni confirmar
     gw.chat = chat
     gw.voice = None
+    gw.board = None
+    if chat is not None:
+        from piantao.web import Board, register_board
+
+        board = Board(PROJECT_ROOT / "media", gw.broadcast, lambda: gw.clients > 0)
+        gw.board = board
+        gw.handlers.update(board.handlers())
+        registry = getattr(agent, "tools", None)
+        if registry is not None:
+            register_board(registry, board)  # el modelo puede mostrar tarjetas; son solo visuales (nivel 1)
     if chat is not None and wcfg.voice_enabled:
         from piantao.voice.audio import AudioConfig
         from piantao.web.voice import WebVoice, load_engines
