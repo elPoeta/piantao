@@ -3,9 +3,10 @@ import { Link, PiantaoEvent, Snapshot, logout, sessionPaired } from "./api";
 import { Chat, Msg, applyChat } from "./Chat";
 import { ConfirmModal, ConfirmReq } from "./Confirm";
 import { Pair } from "./Pair";
+import { Skills } from "./Skills";
 
 type Status = "connecting" | "open" | "closed" | "unauthorized";
-type Tab = "chat" | "estado";
+type Tab = "chat" | "skills" | "estado";
 const STATE_LABEL: Record<string, string> = { idle: "En reposo", listening: "Escuchando", thinking: "Pensando", speaking: "Hablando", acting: "Actuando", confirming: "Esperando tu permiso" };
 
 export function App() {
@@ -81,13 +82,13 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
         <div class={`orb orb-${state}`} aria-hidden="true" />
         <div class="title"><h1>Piantao</h1><span class="state" aria-live="polite">{STATE_LABEL[state] ?? state}</span></div>
         <nav class="tabs" role="tablist">
-          {(["chat", "estado"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : "Estado"}</button>)}
+          {(["chat", "skills", "estado"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : t === "skills" ? "Skills" : "Estado"}</button>)}
         </nav>
         <span class={`pill pill-${status}`}>{status === "open" ? "conectado" : status === "connecting" ? "conectando" : "reconectando"}</span>
         <button class="ghost" onClick={onLogout}>Cerrar sesion</button>
       </header>
       {notice && <p class="notice" role="alert">{notice}</p>}
-      {tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} /> : (
+      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} /> : (
         <main class="grid">
           <section class="card"><h2>Sesion</h2>
             <dl>{rows.map(([k, v]) => <><dt>{String(k)}</dt><dd>{String(v)}</dd></>)}</dl>

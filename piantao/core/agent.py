@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, Callable, AsyncIterator
 
 from piantao.memory import MemoryStore, build_memory_block
 from piantao.models import ModelRouter
@@ -65,6 +65,7 @@ class AgentCore:
         self.tools = tools
         self.max_tool_rounds = max_tool_rounds
         self.reasoning = reasoning
+        self.system_extras: list[Callable[[], str | None]] = []  # texto extra del prompt (p. ej. indice de skills)
         self.last_reasoning: bool | None = None  # decision del ultimo turno (para las metricas)
 
     # -- conversaciones --------------------------------------------------------------
@@ -104,6 +105,14 @@ class AgentCore:
     def _messages(self, user_text: str) -> list[dict[str, Any]]:
         system = self.system_prompt
         block = self._memory_block(user_text)
+        for extra in self.system_extras:
+            try:
+                text = extra()
+            except Exception:  # noqa: BLE001 - un extra roto no debe tumbar el turno
+                log.exception("fallo un extra del prompt")
+                text = None
+            if text:
+                system = f"{system}\n\n{text}"
         if block:
             system = f"{system}\n\n{block}"
         recent = self.history[-self.max_history :]

@@ -76,3 +76,15 @@ button.stop { background: var(--bad); color: #fff; }
 .warn { color: var(--warn); margin: 0; }
 .actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 0.5rem; }
 .dialog label { display: flex; flex-direction: column; gap: 0.4rem; }
+
+/* skills */
+.skills { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); margin-top: 1rem; align-items: start; }
+.skill-list { list-style: none; margin: 0 0 0.75rem; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.skill-row { width: 100%; text-align: left; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.7rem; background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 400; }
+.skill-row.on { border-color: var(--accent); }
+.skill-name { font-weight: 600; } .skill-desc { flex-basis: 100%; }
+.badge { border-radius: 999px; padding: 0.05rem 0.6rem; font-size: 0.75rem; border: 1px solid var(--line); }
+.badge-approved { color: var(--ok); border-color: var(--ok); } .badge-pending, .badge-changed { color: var(--warn); border-color: var(--warn); }
+.badge-invalid, .badge-duplicate { color: var(--bad); border-color: var(--bad); }
+.linklike { background: none; color: var(--accent); padding: 0 0.3rem; font-weight: 400; text-decoration: underline; }
+code { font-family: ui-monospace, monospace; background: #0b1118; border-radius: 4px; padding: 0.05rem 0.3rem; }

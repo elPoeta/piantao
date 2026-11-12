@@ -192,7 +192,7 @@ def test_permission_modal_explicit_phrase_and_deny_default_focus(browser, tmp_pa
         page.fill("textarea", "hacelo")
         page.keyboard.press("Enter")
         page.wait_for_selector("[role=alertdialog]")
-        page.wait_for_function("document.activeElement && document.activeElement.textContent === 'Denegar'", timeout=3000)
+        page.wait_for_selector("button:focus:has-text('Denegar')", timeout=3000)
         assert "contenido no confiable" in page.inner_text(".dialog")
         assert page.inner_text("pre.payload") == "rm -rf <b>x</b>"  # texto plano
         allow = page.locator("button", has_text="Autorizar")
@@ -224,3 +224,60 @@ def test_stop_button_interrupts_turn(browser, tmp_path):
         page.click("text=Detener")
         page.wait_for_selector("text=(interrumpido)")
         assert page.locator("button", has_text="Enviar").is_visible()
+
+
+def test_skills_page_lists_reviews_and_cannot_approve(browser, tmp_path):
+    from piantao.skills import SkillsConfig, SkillsManager, skills_handlers
+
+    d = tmp_path / "skills" / "demo"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: demo\ndescription: Hace algo\n---\n# Pasos\n<img src=x onerror=window.__pwned=1>\n")
+    (d / "guia.md").write_text("contenido de la guia")
+    mgr = SkillsManager(SkillsConfig(), tmp_path)
+
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="ok")
+
+    with ChatServer(tmp_path, script) as srv:
+        srv.gw.handlers.update(skills_handlers(mgr))
+        page = browser.new_page()
+        pair_and_open(page, srv)
+        page.click("role=tab[name='Skills']")
+        page.wait_for_selector(".skill-row")
+        assert "pendiente" in page.inner_text(".skill-row")
+        page.click(".skill-row")
+        page.wait_for_selector("pre.payload")
+        assert "<img src=x" in page.inner_text("pre.payload") and page.evaluate("window.__pwned") is None
+        assert "python main.py skills approve demo" in page.inner_text(".warn")
+        assert page.locator("button", has_text="Aprobar").count() == 0
+        page.click("text=guia.md")
+        page.wait_for_selector("pre.payload:has-text('contenido de la guia')")
+        mgr.approve("demo")
+        page.click("text=Actualizar")
+        page.wait_for_selector(".badge-approved")
+
+
+# ---- skills (WS) --------------------------------------------------------------------------------------------------
+def test_skills_page_lists_status_shows_content_as_text_and_cannot_approve(browser, tmp_path):
+    from piantao.skills import SkillsConfig, SkillsManager, skills_handlers
+
+    for name, desc in (("buena", "Skill aprobada"), ("nueva", "Skill pendiente <b>x</b>")):
+        d = tmp_path / "skills" / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n# Cuerpo\n<script>window.__pwned=1</script>\n", encoding="utf-8")
+    mgr = SkillsManager(SkillsConfig(), tmp_path, None)
+    mgr.approve("buena")
+    with Server(tmp_path) as srv:
+        srv.gw.handlers.update(skills_handlers(mgr))
+        assert "skills_approve" not in srv.gw.handlers and not any("approve" in k for k in srv.gw.handlers)
+        page = browser.new_page()
+        pair_and_open(page, srv)
+        page.click("role=tab[name='Skills']")
+        page.wait_for_selector(".badge-approved")
+        assert page.locator(".badge-pending").count() == 1
+        page.click(".skill-row:has-text('nueva')")
+        page.wait_for_selector("pre.payload")
+        assert "<script>window.__pwned=1</script>" in page.inner_text("pre.payload")
+        assert "python main.py skills approve nueva" in page.inner_text(".warn")
+        assert page.evaluate("window.__pwned") is None
+        assert "<b>x</b>" in page.inner_text(".skill-list")  # la descripcion tambien es texto plano

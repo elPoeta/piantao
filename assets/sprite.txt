@@ -1,0 +1,16 @@
+.piantao {
+  width: 384px;
+  height: 512px;
+  background-image: url('/assets/piantao-sprite.png');
+  background-size: 400% 200%;
+  background-repeat: no-repeat;
+}
+
+.piantao.reposo       { background-position: 0% 0%; }
+.piantao.pensando     { background-position: 33.333% 0%; }
+.piantao.hablando     { background-position: 66.667% 0%; }
+.piantao.escribiendo  { background-position: 100% 0%; }
+.piantao.analizando   { background-position: 0% 100%; }
+.piantao.buscando     { background-position: 33.333% 100%; }
+.piantao.explicando   { background-position: 66.667% 100%; }
+.piantao.celebrando   { background-position: 100% 100%; }

@@ -39,7 +39,7 @@ function ToolCard({ p }: { p: Extract<Part, { k: "tool" }> }) {
   const status = !p.done ? "ejecutando..." : p.denied ? "denegada" : p.ok ? "ok" : "error";
   return (
     <details class={`tool tool-${!p.done ? "run" : p.denied ? "denied" : p.ok ? "ok" : "err"}`}>
-      <summary>Herramienta <b>{p.name}</b> · {status}</summary>
+      <summary>{p.name.startsWith("skill_") ? "Skill" : "Herramienta"} <b>{p.name}</b> · {status}</summary>
       {p.args && <pre>{p.args}</pre>}
       {p.out && <pre class="out">{p.out}</pre>}
     </details>
