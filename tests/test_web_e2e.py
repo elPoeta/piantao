@@ -281,3 +281,129 @@ def test_skills_page_lists_status_shows_content_as_text_and_cannot_approve(brows
         assert "python main.py skills approve nueva" in page.inner_text(".warn")
         assert page.evaluate("window.__pwned") is None
         assert "<b>x</b>" in page.inner_text(".skill-list")  # la descripcion tambien es texto plano
+
+
+# ---- voz (W2) -----------------------------------------------------------------------------------------------------
+def _tone_wav(path):
+    import struct
+    import wave
+
+    import numpy as np
+
+    rate = 16000
+    t = np.arange(rate * 2) / rate
+    voiced = (0.5 * np.sin(2 * np.pi * 220 * t) * (0.6 + 0.4 * np.sin(2 * np.pi * 3 * t))).astype(np.float32)
+    pcm = np.concatenate([np.zeros(rate, dtype=np.float32), voiced, np.zeros(rate * 3, dtype=np.float32)])
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((pcm * 32767).astype("<i2").tobytes())
+
+
+@pytest.fixture
+def mic_browser(tmp_path):
+    wav = tmp_path / "mic.wav"
+    _tone_wav(wav)
+    with pw.sync_playwright() as p:
+        b = p.chromium.launch(args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
+                                    f"--use-file-for-fake-audio-capture={wav}", "--autoplay-policy=no-user-gesture-required"])
+        yield b
+        b.close()
+
+
+class VoiceServer(ChatServer):
+    def __init__(self, tmp_path, script, texts):
+        import numpy as np
+        from types import SimpleNamespace as NS
+        from piantao.voice.audio import AudioConfig
+        from piantao.web.voice import VoiceEngines, WebVoice
+
+        super().__init__(tmp_path, script)
+        self.stt_calls = []
+        texts = list(texts)
+        outer = self
+
+        class Stt:
+            def transcribe(self, audio):
+                outer.stt_calls.append(len(audio))
+                return NS(text=texts.pop(0) if texts else "")
+
+        class Tts:
+            sample_rate = 24000
+
+            def synthesize(self, text):
+                return (0.2 * np.sin(2 * np.pi * 440 * np.arange(24000) / 24000)).astype(np.float32)
+
+            def close(self):
+                pass
+
+        eng = VoiceEngines(Stt(), Tts(), None, None)
+        self.voice = WebVoice(self.chat, self.bus, AudioConfig(), lambda: eng, self.gw.send_to, self.gw.send_bytes_to,
+                              barge_in=False, tail_ms=50)
+        self.gw.ctx_handlers.update(self.voice.handlers())
+        self.gw.binary_handler = self.voice.on_binary
+        self.gw.disconnect_hooks.append(self.voice.on_disconnect)
+
+    def __exit__(self, *a):
+        asyncio.run_coroutine_threadsafe(self.voice.close(), self.loop).result(5)
+        return super().__exit__(*a)
+
+
+def test_voice_always_mode_hears_fake_mic_and_plays_reply(mic_browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text=f"Escuché: {text}. ")
+
+    with VoiceServer(tmp_path, script, ["hola desde el micrófono"]) as srv:
+        ctx = mic_browser.new_context(permissions=["microphone"])
+        page = ctx.new_page()
+        problems = []
+        page.on("pageerror", lambda e: problems.append(str(e)))
+        page.on("console", lambda m: problems.append(m.text) if m.type == "error" else None)
+        pair_and_open(page, srv)
+        page.wait_for_selector(".voicebar")
+        page.select_option(".voicebar select", "always")
+        page.click("text=Activar micrófono")
+        page.wait_for_selector("text=Apagar micrófono", timeout=10000)
+        page.wait_for_selector("text=hola desde el micrófono", timeout=15000)  # «Entendí: ...» y la burbuja del usuario
+        page.wait_for_selector(".bubble-assistant:has-text('Escuché')", timeout=10000)
+        page.wait_for_selector(".vstate-speaking", timeout=10000)  # llego audio y se esta reproduciendo
+        assert srv.stt_calls and srv.stt_calls[0] > 16000 // 4
+        page.click("text=Apagar micrófono")
+        page.wait_for_selector("text=Activar micrófono")
+        assert not srv.voice.active
+        assert problems == [], problems  # incluye errores de JavaScript al decodificar el audio recibido
+
+
+def test_voice_ptt_only_sends_audio_while_pressed(mic_browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="ok")
+
+    with VoiceServer(tmp_path, script, ["pulsé y hablé"]) as srv:
+        ctx = mic_browser.new_context(permissions=["microphone"])
+        page = ctx.new_page()
+        pair_and_open(page, srv)
+        page.wait_for_selector(".voicebar")
+        page.click("text=Activar micrófono")
+        page.wait_for_selector("text=Mantener para hablar", timeout=10000)
+        page.wait_for_timeout(2500)  # sin pulsar no sale audio
+        assert srv.stt_calls == []
+        page.keyboard.down("Space")
+        page.wait_for_timeout(2600)  # cubre el tramo con voz del archivo falso
+        page.keyboard.up("Space")
+        page.wait_for_selector("text=pulsé y hablé", timeout=10000)
+        assert len(srv.stt_calls) == 1
+
+
+def test_voice_mic_permission_denied_shows_error_and_keeps_server_clean(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with VoiceServer(tmp_path, script, []) as srv:
+        ctx = browser.new_context()  # sin permiso de microfono
+        page = ctx.new_page()
+        pair_and_open(page, srv)
+        page.wait_for_selector(".voicebar")
+        page.click("text=Activar micrófono")
+        page.wait_for_selector("text=Activar micrófono", timeout=8000)
+        assert not srv.voice.active

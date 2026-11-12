@@ -24,6 +24,7 @@ Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 COOKIE = "piantao_session"
 CSRF_HEADER = "X-Piantao"
 QUEUE_SIZE = 256
+LONG_COMMANDS = {"voice_start": 120.0}  # cargar Whisper y Kokoro la primera vez puede tardar
 STATIC = Path(__file__).parent / "static"
 
 CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; "
@@ -49,6 +50,10 @@ class WebGateway:
         self.static = Path(cfg.static_dir) if cfg.static_dir else STATIC
         self.port = cfg.port
         self.chat: Any = None
+        self.voice: Any = None
+        self.ctx_handlers: dict[str, Callable[[dict[str, Any], Any], Awaitable[Any]]] = {}  # reciben tambien la conexion
+        self.binary_handler: Callable[[Any, bytes], None] | None = None
+        self.disconnect_hooks: list[Callable[[Any], None]] = []
         self._runner: web.AppRunner | None = None
         self._clients: set["_WsClient"] = set()
         self._unsub: Callable[[], None] | None = None
@@ -179,6 +184,9 @@ class WebGateway:
         finally:
             self._clients.discard(client)
             await client.close()
+            for hook in list(self.disconnect_hooks):
+                with contextlib.suppress(Exception):
+                    hook(client)
             self.audit("web_disconnect", via="web")
         return ws
 
@@ -201,6 +209,27 @@ class WebGateway:
         for c in list(self._clients):
             c.send(msg)
 
+    def _threadsafe(self, fn: Callable[..., None], *a: Any) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            fn(*a)
+        else:
+            loop.call_soon_threadsafe(fn, *a)
+
+    def send_to(self, client: Any, msg: dict[str, Any]) -> None:
+        """Mensaje JSON a UNA conexion (seguro entre hilos)."""
+        self._threadsafe(client.send, msg)
+
+    def send_bytes_to(self, client: Any, data: bytes) -> None:
+        """Trama binaria a UNA conexion (seguro entre hilos)."""
+        self._threadsafe(client.send_binary, data)
+
     def broadcast(self, msg: dict[str, Any]) -> None:
         """Envia un mensaje a todos los navegadores conectados (solo desde el hilo del bucle)."""
         self._fanout(msg)
@@ -219,8 +248,17 @@ class WebGateway:
 class _WsClient:
     def __init__(self, gw: WebGateway, ws: web.WebSocketResponse, sid: str):
         self.gw, self.ws, self.sid = gw, ws, sid
-        self.queue: asyncio.Queue[str | None] = asyncio.Queue(QUEUE_SIZE)
+        self.queue: asyncio.Queue[str | bytes | None] = asyncio.Queue(QUEUE_SIZE)
         self._closed = False
+
+    def send_binary(self, data: bytes) -> None:
+        if self._closed:
+            return
+        try:
+            self.queue.put_nowait(bytes(data))
+        except asyncio.QueueFull:
+            log.warning("web: cliente demasiado lento, desconectado")
+            self.abort()
 
     def send(self, msg: dict[str, Any]) -> None:
         if self._closed:
@@ -251,7 +289,10 @@ class _WsClient:
     async def _writer(self) -> None:
         try:
             while (data := await self.queue.get()) is not None:
-                await self.ws.send_str(data)
+                if isinstance(data, bytes):
+                    await self.ws.send_bytes(data)
+                else:
+                    await self.ws.send_str(data)
         except (ConnectionError, OSError, RuntimeError):
             pass
 
@@ -266,7 +307,12 @@ class _WsClient:
             async for m in self.ws:
                 if m.type != WSMsgType.TEXT:
                     if m.type == WSMsgType.BINARY:
-                        self.send({"t": "reply", "id": None, "ok": False, "error": "binario no soportado todavia"})
+                        if self.gw.binary_handler is None:
+                            self.send({"t": "reply", "id": None, "ok": False, "error": "binario no soportado"})
+                        elif self.gw.sessions.verify_sid(self.sid):
+                            self.gw.binary_handler(self, m.data)
+                        else:
+                            break
                         continue
                     break
                 if not self.gw.sessions.verify_sid(self.sid):  # sesion revocada mientras estaba conectada
@@ -290,11 +336,14 @@ class _WsClient:
             return
         cid, name, args = msg.get("id"), msg.get("name"), msg.get("args") or {}
         handler = self.gw.handlers.get(name) if isinstance(name, str) else None
+        if handler is None and isinstance(name, str) and name in self.gw.ctx_handlers and isinstance(args, dict):
+            ctx = self.gw.ctx_handlers[name]
+            handler = lambda a: ctx(a, self)  # noqa: E731
         if handler is None or not isinstance(args, dict):
             self.send({"t": "reply", "id": cid, "ok": False, "error": f"comando desconocido: {name!r}"})
             return
         try:
-            data = await asyncio.wait_for(handler(args), 10.0)
+            data = await asyncio.wait_for(handler(args), LONG_COMMANDS.get(name, 10.0))
             self.send({"t": "reply", "id": cid, "ok": True, "data": data})
         except (ValueError, KeyError, LookupError) as exc:
             self.send({"t": "reply", "id": cid, "ok": False, "error": str(exc)[:200]})
