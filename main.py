@@ -395,7 +395,8 @@ async def start_shortcuts(cfg: dict, portal, keys, loop):
     return svc
 
 
-async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None = None, confirmer: WebConfirmer | None = None):
+async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None = None, confirmer: WebConfirmer | None = None,
+                    hub: GestureHub | None = None):
     """Servicio web en localhost. Reutiliza el mismo estado y comandos que el panel; si falla, Piantao sigue sin web."""
     wcfg = WebConfig.from_config(cfg)
     if not wcfg.enabled:
@@ -433,8 +434,31 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         gw.voice = WebVoice(chat, bus, AudioConfig.from_config(cfg), lambda: load_engines(cfg), gw.send_to, gw.send_bytes_to,
                             barge_in=wcfg.voice_barge_in, barge_ms=wcfg.voice_barge_ms)
         gw.ctx_handlers.update(gw.voice.handlers())
-        gw.binary_handler = gw.voice.on_binary
+        gw.binary_handlers[1] = gw.voice.on_binary
         gw.disconnect_hooks.append(gw.voice.on_disconnect)
+    gw.vision = None
+    if chat is not None and hub is not None:
+        from piantao.web.vision import BIN_LANDMARKS, WebVision
+
+        try:
+            g_cfg = GestureConfig.from_config(cfg)
+            hands_cfg = HandsConfig.from_config(cfg, PROJECT_ROOT)
+        except VisionConfigError as exc:
+            print(f"Camara web desactivada: {exc}", file=sys.stderr)
+        else:
+            th = load_calibration(PROJECT_ROOT / g_cfg.calibration_file, g_cfg.thresholds)
+            perms = getattr(getattr(agent, "tools", None), "permissions", None)
+            gw.hand_model = hands_cfg.model_path
+            gw.vision = WebVision(hub, bus, g_cfg, th, PROJECT_ROOT / g_cfg.calibration_file, gw.send_to, perms)
+            gw.ctx_handlers.update(gw.vision.handlers())
+            gw.binary_handlers[BIN_LANDMARKS] = gw.vision.on_binary
+            gw.disconnect_hooks.append(gw.vision.on_disconnect)
+
+            def palm_interrupt() -> None:  # la palma sostenida calla a Piantao (con voz activa, tambien corta el audio)
+                v = gw.voice
+                asyncio.ensure_future(v.interrupt() if v is not None and v.active else chat.interrupt(wait=True))
+
+            hub.on_interrupt = palm_interrupt
     if getattr(agent, "skills", None) is not None:
         gw.handlers.update(skills_handlers(agent.skills))  # lectura solamente; aprobar es por terminal
     ui_server.handlers["pair_code"] = pair_code  # solo por el socket privado, nunca por la web
@@ -454,8 +478,22 @@ async def serve(cfg: dict, provider: str | None, model: str | None, resume_last:
     import signal
 
     bus = EventBus()
-    web_confirm = WebConfirmer(bus, timeout_s=float((cfg["voice"].get("confirm") or {}).get("service_timeout_s", 120)))
-    announcing = make_announcing_confirmer(web_confirm, bus, lambda _r, _e: ["web"])
+    try:
+        hub = GestureHub(GesturePolicy.from_config(cfg), bus, out=lambda *a, **k: None)
+    except VisionConfigError as exc:
+        print(f"Gestos desactivados: {exc}", file=sys.stderr)
+        hub = GestureHub(GesturePolicy(False, False), bus, out=lambda *a, **k: None)
+
+    def gesture_info(req, explicit):
+        if not hub.active:
+            return {"available": False, "blocked": None}
+        return {"available": hub.eligible(req, explicit), "blocked": hub.blocked_reason(req, explicit)}
+
+    web_confirm = WebConfirmer(bus, timeout_s=float((cfg["voice"].get("confirm") or {}).get("service_timeout_s", 120)),
+                               extra=lambda r, e: {"gesture": gesture_info(r, e)})
+    # gana la primera respuesta: el cuadro de la pagina o un gesto (solo si la politica lo permite)
+    gestured = make_gesture_confirmer(web_confirm, hub)
+    announcing = make_announcing_confirmer(gestured, bus, lambda r, e: ["web"] + (["gestos"] if hub.eligible(r, e) else []))
     built = build_agent(cfg, provider, model, confirmer=announcing)
     if built is None:
         return 1
@@ -463,10 +501,10 @@ async def serve(cfg: dict, provider: str | None, model: str | None, resume_last:
     loop = asyncio.get_running_loop()
     if resume_last and memory is not None and memory.last_conversation_id() is not None:
         print(f"Retomada la conversacion #{memory.last_conversation_id()} ({agent.resume(memory.last_conversation_id())} mensajes).")
-    hub = None  # sin gestos locales: la vision llega por el navegador (fase W3)
     await start_mcp(agent)
+    hub.audit = getattr(agent, "audit", None)
     ui_server, monitor = await start_ui(cfg, bus, router, agent, None, hub)
-    gw = await start_web(cfg, bus, ui_server, agent, web_confirm)
+    gw = await start_web(cfg, bus, ui_server, agent, web_confirm, hub)
     if gw is None:
         if ui_server is not None:
             await ui_server.stop()
@@ -481,6 +519,8 @@ async def serve(cfg: dict, provider: str | None, model: str | None, resume_last:
     try:
         await stop.wait()
     finally:
+        if getattr(gw, "vision", None) is not None:
+            await gw.vision.stop()
         if getattr(gw, "voice", None) is not None:
             await gw.voice.close()
         if gw.chat is not None:

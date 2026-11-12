@@ -5,6 +5,8 @@ import { ConfirmModal, ConfirmReq } from "./Confirm";
 import { Pair } from "./Pair";
 import { VoiceBar, VoiceUi } from "./VoiceBar";
 import { VoiceClient, VoiceMode } from "./voice";
+import { VisionClient } from "./vision";
+import { VisionBar, VisionUi } from "./VisionBar";
 import { Skills } from "./Skills";
 
 type Status = "connecting" | "open" | "closed" | "unauthorized";
@@ -31,6 +33,9 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   const link = useRef<Link>();
   const voice = useRef<VoiceClient>();
   const [vui, setVui] = useState<VoiceUi>({ available: false, state: "off", detail: "", level: 0, mode: "ptt", error: "", last: "", readAloud: false, bargeIn: false });
+  const vision = useRef<VisionClient>();
+  const [vis, setVis] = useState<VisionUi>({ available: false, state: "off", detail: "", status: null, lastGesture: "", error: "", calibrated: false });
+  const patchVis = (p: Partial<VisionUi>) => setVis((v) => ({ ...v, ...p }));
   const patchVoice = (p: Partial<VoiceUi>) => setVui((v) => ({ ...v, ...p }));
 
   async function loadHistory(l: Link) {
@@ -52,6 +57,14 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       onError: (error) => { patchVoice({ error }); window.setTimeout(() => patchVoice({ error: "" }), 6000); },
     });
     voice.current = vc;
+    const vs = new VisionClient(l, {
+      onState: (state, detail) => patchVis({ state, detail: detail ?? "", ...(state === "off" ? { status: null } : {}) }),
+      onStatus: (status) => patchVis({ status }),
+      onGesture: (name) => { patchVis({ lastGesture: name }); window.setTimeout(() => setVis((v) => (v.lastGesture === name ? { ...v, lastGesture: "" } : v)), 2500); },
+      onError: (error) => patchVis({ error }),
+    });
+    vision.current = vs;
+    l.onVision = (m) => vs.handle(m);
     l.onVoice = (m) => vc.handle(m);
     l.onBinary = (d) => vc.handleBinary(d);
     l.onSnapshot = setSnap;
@@ -59,8 +72,12 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       setStatus(s);
       if (s === "open") {
         void loadHistory(l);
+        l.command("vision_info").then((i) => patchVis({ available: true, calibrated: !!i.calibrated })).catch(() => patchVis({ available: false }));
         l.command("voice_info").then((i) => patchVoice({ available: true, bargeIn: !!i.barge_in })).catch(() => patchVoice({ available: false }));
-      } else if (vc.active) void vc.stop(); // sin conexion el servidor ya apago la voz: se libera el microfono
+      } else {
+        if (vc.active) void vc.stop();
+        if (vs.state !== "off") void vs.stop();
+      } // sin conexion el servidor ya apago la voz: se libera el microfono
       if (s === "unauthorized") onLost();
     };
     l.onEvent = (e) => {
@@ -79,10 +96,13 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       else setConfirms((c) => c.filter((x) => x.id !== m.id));
     };
     l.connect();
-    return () => { void voice.current?.stop(); l.close(); };
+    return () => { void voice.current?.stop(); void vision.current?.stop(); l.close(); };
   }, []);
 
   function run(p: Promise<unknown> | undefined) { p?.catch((e: Error) => { setNotice(e.message); window.setTimeout(() => setNotice(""), 5000); }); }
+  const toggleCam = () => run(vis.state === "off" ? vision.current?.start() : vision.current?.stop());
+  const calibrate = async (pose: "open" | "closed") => { const r = await vision.current!.calibrate(pose); return `Medido: ${r.samples} muestras (valor ${r.median}).`; };
+  const applyCal = async () => { const r = await vision.current!.applyCalibration(); patchVis({ calibrated: true }); return `Calibración aplicada y guardada (${r.finger_curled} / ${r.finger_extended}).`; };
   const send = (t: string) => run(link.current?.command("chat_send", { text: t, speak: vui.readAloud && vui.state !== "off" }));
   const toggleMic = () => run(vui.state === "off" ? voice.current?.start(vui.mode) : voice.current?.stop());
   const stop = () => run(link.current?.command("chat_interrupt"));
@@ -111,8 +131,8 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       </header>
       {notice && <p class="notice" role="alert">{notice}</p>}
       {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh}
-        extra={<VoiceBar ui={vui} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggle={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))}
-          onStop={() => run(voice.current?.interrupt())} onReadAloud={(readAloud) => patchVoice({ readAloud })} />} /> : (
+        extra={<><VisionBar ui={vis} onToggle={toggleCam} onVideo={(v, c) => vision.current?.attach(v, c)} onCalibrate={calibrate} onApply={applyCal} /><VoiceBar ui={vui} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggle={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))}
+          onStop={() => run(voice.current?.interrupt())} onReadAloud={(readAloud) => patchVoice({ readAloud })} /></>} /> : (
         <main class="grid">
           <section class="card"><h2>Sesion</h2>
             <dl>{rows.map(([k, v]) => <><dt>{String(k)}</dt><dd>{String(v)}</dd></>)}</dl>
