@@ -1,0 +1,14 @@
+# Skills del agente (v2.0). Una skill es una carpeta con un SKILL.md (mismo formato que las skills de Claude).
+# Solo se leen las carpetas listadas en `dirs`. Cada skill debe aprobarse UNA VEZ por vos (la huella cubre todos sus archivos;
+# si cambia, vuelve a pendiente):   python main.py skills list | show NOMBRE | approve NOMBRE | revoke NOMBRE
+# El modelo ve solo nombre + descripcion; el contenido se carga cuando lo necesita (skill_load).
+skills:
+  enabled: true
+  dirs: [skills]            # relativo a la raiz del proyecto; admite rutas absolutas y ~
+  max_skills: 50
+  max_files: 100            # por skill
+  max_total_bytes: 2000000  # por skill
+  max_body_chars: 20000     # lo maximo de SKILL.md que entra al contexto
+  max_file_bytes: 100000    # por archivo leido con skill_read
+  index_desc_chars: 160     # largo de la descripcion que ve el modelo
+  max_index_chars: 3000     # tope del indice completo en el prompt

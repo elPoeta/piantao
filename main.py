@@ -40,6 +40,7 @@ from piantao.models import ModelRouter, RouterError
 from piantao.providers import ProviderError, ToolCall
 from piantao.tools import ToolRegistry, ToolsConfig, register_builtin
 from piantao.mcp import McpConfig, McpManager
+from piantao.skills import SkillError, SkillsConfig, SkillsManager, register_skills, skills_handlers
 from piantao.web import ChatSession, PairingManager, SessionStore, WebConfig, WebConfirmer, WebGateway
 from piantao.security import AuditError, AuditLog, PermissionManager, audit_path, read_tail, verify_chain
 
@@ -264,6 +265,12 @@ def build_agent(cfg: dict, provider: str | None, model: str | None, confirmer=No
         max_tool_rounds=tools_cfg.max_tool_rounds,
         reasoning=ReasoningPolicy.from_config(cfg),
     )
+    agent.skills = None
+    scfg = SkillsConfig.from_config(cfg)
+    if registry is not None and scfg.enabled:
+        agent.skills = SkillsManager(scfg, PROJECT_ROOT, audit)
+        register_skills(registry, agent.skills)
+        agent.system_extras.append(agent.skills.index)
     agent.mcp = mcp  # se inicia/detiene con start_mcp/stop_mcp
     agent.portal = portal
     agent.audit = audit
@@ -418,6 +425,8 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         confirmer.broadcast, confirmer.has_clients = gw.broadcast, lambda: gw.clients > 0
         gw.handlers.update(chat.handlers())  # solo web: el socket del panel no puede chatear ni confirmar
     gw.chat = chat
+    if getattr(agent, "skills", None) is not None:
+        gw.handlers.update(skills_handlers(agent.skills))  # lectura solamente; aprobar es por terminal
     ui_server.handlers["pair_code"] = pair_code  # solo por el socket privado, nunca por la web
     ui_server.handlers["web_revoke_all"] = revoke_sessions
     try:
@@ -490,6 +499,55 @@ def pair_cmd() -> int:
         print(f"Codigo: {info['code']}  (vale {info['ttl_s']} s, un solo uso)\nAbri: {info['url']}")
         return 0
     return asyncio.run(go())
+
+
+def skills_cmd(cfg: dict, action: str, name: str | None) -> int:
+    """Administra las skills. Aprobar solo se puede desde aqui: ni el modelo ni la web pueden hacerlo."""
+    try:
+        audit = AuditLog.from_config(cfg, PROJECT_ROOT)
+    except AuditError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    mgr = SkillsManager(SkillsConfig.from_config(cfg), PROJECT_ROOT, audit)
+    labels = {"approved": "aprobada", "pending": "PENDIENTE de aprobar", "changed": "CAMBIO desde la aprobacion",
+              "invalid": "invalida", "duplicate": "duplicada"}
+    if action == "list":
+        skills = mgr.scan(fresh=True)
+        if not skills:
+            print(f"No hay skills en {', '.join(mgr.cfg.dirs)} (cada una es una carpeta con un SKILL.md).")
+        for s in skills:
+            print(f"{s.name:<24} {labels[s.status]:<28} {s.error or s.description[:70]}")
+        return 0
+    if not name:
+        print(f"Uso: python main.py skills {action} NOMBRE", file=sys.stderr)
+        return 2
+    try:
+        if action == "revoke":
+            print("Aprobacion retirada." if mgr.revoke(name) else f"'{name}' no estaba aprobada.")
+            return 0
+        info = mgr.get(name, fresh=True)
+        print(f"Skill '{info.name}' ({labels[info.status]}) en {info.path}")
+        if info.status == "invalid":
+            print(f"Error: {info.error}", file=sys.stderr)
+            return 1
+        print(f"Descripcion: {info.description}\nArchivos: " + ", ".join(f"{p} ({n} B)" for p, n in info.files) + f"\nHuella: {info.fingerprint[:16]}...")
+        body = mgr.read_body(name)
+        shown = "\n".join(body.splitlines()[:60])
+        print("-" * 60 + f"\n{shown}\n" + ("[... recortado, usa 'show' o abri el archivo completo]\n" if len(body.splitlines()) > 60 else "") + "-" * 60)
+        print("Estas instrucciones se le daran al modelo. Revisa tambien los scripts: solo corren por run_command (permisos y lista blanca).")
+        if action == "approve":
+            if info.status == "approved":
+                print("Ya esta aprobada con esta huella.")
+                return 0
+            if input("Escribe APROBAR para fijar esta huella: ").strip() != "APROBAR":
+                print("Cancelado.")
+                return 1
+            mgr.approve(name)
+            print("Aprobada.")
+    except SkillError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def events_cmd() -> int:
@@ -885,6 +943,9 @@ def main() -> int:
     serve_p.add_argument("--provider", help="Proveedor")
     serve_p.add_argument("--model", help="Modelo")
     serve_p.add_argument("--continue", dest="resume_last", action="store_true", help="Retoma la ultima conversacion")
+    skills_p = sub.add_parser("skills", help="Skills del agente: list | show | approve | revoke")
+    skills_p.add_argument("action", choices=["list", "show", "approve", "revoke"])
+    skills_p.add_argument("name", nargs="?")
     sub.add_parser("pair", help="Emite un codigo para emparejar un navegador con el servicio web en marcha")
     sub.add_parser("events", help="Muestra en vivo el estado que Piantao publica para el panel (diagnostico)")
     met_p = sub.add_parser("metrics", help="Resumen de latencias y recursos de los turnos de voz")
@@ -935,6 +996,8 @@ def main() -> int:
         return run_hud((ui.get("ipc") or {}).get("socket"), ui.get("hud"))
     if args.command == "serve":
         return asyncio.run(serve(cfg, args.provider, args.model, args.resume_last))
+    if args.command == "skills":
+        return skills_cmd(cfg, args.action, args.name)
     if args.command == "pair":
         return pair_cmd()
     if args.command == "events":
