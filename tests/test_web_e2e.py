@@ -407,3 +407,131 @@ def test_voice_mic_permission_denied_shows_error_and_keeps_server_clean(browser,
         page.click("text=Activar micrófono")
         page.wait_for_selector("text=Activar micrófono", timeout=8000)
         assert not srv.voice.active
+
+
+# ---- vision (W3) ----------------------------------------------------------------------------------------------------
+class VisionServer(ChatServer):
+    def __init__(self, tmp_path, script, model=None):
+        from piantao.gestures import GestureConfig, GestureHub, GesturePolicy, Thresholds, make_gesture_confirmer
+        from piantao.web import WebVision
+
+        super().__init__(tmp_path, script)
+        self.hub = GestureHub(GesturePolicy(), self.bus, out=lambda *a, **k: None)
+        self.interrupts = []
+        self.hub.on_interrupt = lambda: self.interrupts.append(1)
+        self.vision = WebVision(self.hub, self.bus, GestureConfig(), Thresholds(), tmp_path / "cal.json", self.gw.send_to)
+        self.gw.ctx_handlers.update(self.vision.handlers())
+        from piantao.web.vision import BIN_LANDMARKS
+        self.gw.binary_handlers[BIN_LANDMARKS] = self.vision.on_binary
+        self.gw.disconnect_hooks.append(self.vision.on_disconnect)
+        self.gw.hand_model = model
+        self.confirm.extra = lambda r, e: {"gesture": {"available": self.hub.eligible(r, e), "blocked": self.hub.blocked_reason(r, e)}}
+        self.gestured = make_gesture_confirmer(self.confirm, self.hub)
+
+
+def test_vision_page_offers_camera_and_reports_missing_model_clearly(mic_browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with VisionServer(tmp_path, script, model=tmp_path / "no-existe.task") as srv:
+        ctx = mic_browser.new_context(permissions=["camera"])
+        page = ctx.new_page()
+        problems = []
+        page.on("pageerror", lambda e: problems.append(str(e)))
+        pair_and_open(page, srv)
+        page.wait_for_selector(".visionbar")
+        page.click("text=Activar cámara y gestos")
+        page.wait_for_selector("[role=alert]:has-text('fetch_models')", timeout=20000)  # el modelo no esta: mensaje accionable
+        page.wait_for_selector("text=Activar cámara y gestos")
+        assert not srv.vision.active and not srv.hub.active
+        assert problems == [], problems
+
+
+def test_vision_wasm_and_assets_load_under_strict_csp(mic_browser, tmp_path):
+    """El runtime de MediaPipe (JS + WASM) se carga desde este mismo servicio sin violar la politica de contenido."""
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    model = tmp_path / "fake.task"
+    model.write_bytes(b"no es un modelo")
+    with VisionServer(tmp_path, script, model=model) as srv:
+        ctx = mic_browser.new_context(permissions=["camera"])
+        page = ctx.new_page()
+        violations = []
+        page.on("console", lambda m: violations.append(m.text) if "Content Security Policy" in m.text or "Refused" in m.text else None)
+        requested = []
+        page.on("requestfinished", lambda r: requested.append(r.url))
+        pair_and_open(page, srv)
+        page.click("text=Activar cámara y gestos")
+        page.wait_for_selector("[role=alert]", timeout=30000)  # modelo invalido: falla DESPUES de cargar el runtime
+        assert any(u.endswith("vision_wasm_internal.wasm") for u in requested), requested
+        assert any(u.endswith("hand_landmarker.task") for u in requested)
+        assert violations == [], violations
+        assert all(u.startswith(srv.gw.url) for u in requested)  # nada sale a internet
+
+
+def test_synthetic_landmarks_over_real_websocket_drive_palm_and_confirmation(browser, tmp_path):
+    """Una pagina autenticada manda tramas binarias de puntos sinteticos; el servidor decide los gestos."""
+    from piantao.security import ActionRequest
+
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with VisionServer(tmp_path, script) as srv:
+        page = browser.new_page()
+        pair_and_open(page, srv)
+        make_js = """
+        (async () => {
+          const ws = new WebSocket(`ws://${location.host}/ws`);
+          window.__msgs = []; window.__ws = ws;
+          ws.binaryType = 'arraybuffer';
+          ws.onmessage = (m) => { if (typeof m.data === 'string') window.__msgs.push(JSON.parse(m.data)); };
+          await new Promise((r) => ws.onopen = r);
+          const cmd = (name, args) => new Promise((ok) => { const id = Math.floor(Math.random()*1e9);
+            const h = (m) => { if (typeof m.data === 'string') { const j = JSON.parse(m.data); if (j.t === 'reply' && j.id === id) { ws.removeEventListener('message', h); ok(j); } } };
+            ws.addEventListener('message', h); ws.send(JSON.stringify({t:'cmd', id, name, args})); });
+          window.__cmd = cmd;
+          return (await cmd('vision_start', {aspect: 1.333})).ok;
+        })()
+        """
+        # el cliente de la pagina ya tiene su propia conexion: usamos otra para que la camara quede en ESTA conexion de prueba
+        assert page.evaluate(make_js) is True
+        hand = """
+        (pose) => {
+          const pts = new Float32Array(63);
+          const MCP = {5:0.45, 9:0.50, 13:0.55, 17:0.60};
+          for (let i = 0; i < 21; i++) { pts[i*3] = 0.5; pts[i*3+1] = 0.8; }
+          for (const [b, x] of Object.entries(MCP)) { const k = Number(b);
+            const ext = pose === 'open';
+            const ys = [0.6, ext ? 0.5 : 0.55, ext ? 0.45 : 0.6, ext ? 0.40 : 0.67];
+            for (let j = 0; j < 4; j++) { pts[(k+j)*3] = x; pts[(k+j)*3+1] = ys[j]; } }
+          pts[3] = 0.42; pts[4] = 0.78; pts[6] = 0.40; pts[7] = 0.72; pts[9] = 0.40; pts[10] = 0.6;
+          const tip = pose === 'up' ? [0.40, 0.45] : pose === 'open' ? [0.20, 0.72] : [0.50, 0.65];
+          pts[12] = tip[0]; pts[13] = tip[1];
+          const buf = new ArrayBuffer(6 + 254); const dv = new DataView(buf);
+          dv.setUint8(0, 3); dv.setUint32(1, 0, true); dv.setUint8(5, 1); dv.setUint8(6, 1); dv.setUint8(7, 230);
+          for (let i = 0; i < 63; i++) dv.setFloat32(8 + i*4, pts[i] * (i % 3 === 0 ? 1/1.333 : 1), true);
+          return buf; }
+        """
+        page.evaluate(f"window.__hand = {hand}")
+        page.evaluate("""async () => { for (let i = 0; i < 40; i++) { window.__ws.send(window.__hand('open')); await new Promise(r => setTimeout(r, 50)); } }""")
+        page.wait_for_function("window.__msgs.some(m => m.t === 'vision' && m.ev === 'gesture' && m.name === 'palm')", timeout=5000)
+        assert srv.interrupts, "la palma debe interrumpir"
+        page.wait_for_function("window.__msgs.some(m => m.t === 'vision' && m.ev === 'status' && m.pose === 'open_palm')", timeout=3000)
+
+        async_confirm = {}
+
+        async def ask():
+            req = ActionRequest(kind="shell_exec", description="Ejecutar ls", details={"tool": "run_command"}, origin="model")
+            async_confirm["r"] = await srv.gestured(req, False)
+
+        fut = __import__("asyncio").run_coroutine_threadsafe(ask(), srv.loop)
+        page.wait_for_function("window.__msgs.some(m => m.t === 'confirm' && m.extra && m.extra.gesture && m.extra.gesture.available)", timeout=5000)
+        page.evaluate("""async () => { for (let i = 0; i < 40; i++) { window.__ws.send(window.__hand('open')); await new Promise(r => setTimeout(r, 50)); } }""")
+        page.wait_for_function("window.__msgs.some(m => m.t === 'vision' && m.ev === 'gesture' && m.name === 'activate')", timeout=5000)
+        page.evaluate("""async () => { for (let i = 0; i < 40; i++) { window.__ws.send(window.__hand('up')); await new Promise(r => setTimeout(r, 50)); } }""")
+        assert fut.result(10) is None and async_confirm["r"] is True
+        page.wait_for_function("window.__msgs.some(m => m.t === 'confirm_done')", timeout=3000)
+        # basura binaria: se ignora y la conexion sigue viva
+        page.evaluate("window.__ws.send(new Uint8Array([3, 1, 2, 3]))")
+        assert page.evaluate("window.__cmd('vision_info', {}).then(r => r.ok)") is True

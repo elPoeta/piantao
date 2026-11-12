@@ -99,3 +99,13 @@ button.ptt { background: var(--ok); color: #04121a; touch-action: none; user-sel
 .check { display: flex; align-items: center; gap: 0.3rem; color: var(--muted); }
 .level { width: 8rem; height: 0.7rem; }
 .vstate { font-weight: 600; } .vstate-listening { color: var(--ok); } .vstate-speaking { color: #b388ff; } .vstate-transcribing, .vstate-loading { color: var(--warn); }
+
+/* camara y gestos */
+.visionbar { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; margin-top: 0.75rem; background: var(--panel); }
+.camview { position: fixed; right: 1rem; bottom: 1rem; width: 14rem; aspect-ratio: 4 / 3; border: 1px solid var(--accent); border-radius: 10px; overflow: hidden; background: #000; z-index: 5; }
+.camview-hidden { width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; }
+.camvideo, .camcanvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+.armed { color: var(--ok); font-weight: 600; }
+.gesture-toast { background: var(--accent); color: #04121a; border-radius: 999px; padding: 0.1rem 0.7rem; font-weight: 600; }
+.gesture-hint { color: var(--ok); margin: 0; }
+.calib { margin-top: 0.5rem; }

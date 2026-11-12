@@ -45,8 +45,9 @@ def describe_request(req: Any, explicit: bool) -> dict[str, Any]:
 class WebConfirmer:
     """Confirmador asincrono: pregunta a los navegadores conectados y espera la primera respuesta valida."""
 
-    def __init__(self, bus: Any = None, timeout_s: float = 120.0):
-        self.bus, self.timeout_s = bus, timeout_s
+    def __init__(self, bus: Any = None, timeout_s: float = 120.0,
+                 extra: Callable[[Any, bool], dict[str, Any]] | None = None):
+        self.bus, self.timeout_s, self.extra = bus, timeout_s, extra
         self.broadcast: Broadcast | None = None
         self.has_clients: Callable[[], bool] = lambda: False
         self._pending: dict[str, tuple[asyncio.Future[bool], dict[str, Any]]] = {}
@@ -56,6 +57,11 @@ class WebConfirmer:
             return False  # nadie mirando: no se autoriza nada
         cid = secrets.token_hex(8)
         info = {"id": cid, **describe_request(req, explicit)}
+        if self.extra is not None:
+            try:
+                info["extra"] = self.extra(req, explicit)  # p. ej. si se puede responder con gestos
+            except Exception:  # noqa: BLE001
+                log.exception("web: no se pudo armar la informacion extra de la confirmacion")
         fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         self._pending[cid] = (fut, info)
         if self.bus is not None:
@@ -66,7 +72,7 @@ class WebConfirmer:
             allowed = await asyncio.wait_for(fut, self.timeout_s)
         except asyncio.TimeoutError:
             allowed = False
-        finally:
+        finally:  # tambien al cancelarse (p. ej. gano un gesto): se cierra el cuadro en todos los navegadores
             self._pending.pop(cid, None)
             self.broadcast({"t": "confirm_done", "id": cid, "allowed": bool(allowed)})
         return bool(allowed)

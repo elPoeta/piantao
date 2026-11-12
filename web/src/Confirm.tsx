@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 export interface ConfirmReq {
   id: string; kind: string; description: string; origin: string; explicit: boolean; tainted: boolean;
   details: Record<string, string>; payload: string | null; timeout_s: number;
+  extra?: { gesture?: { available: boolean; blocked: string | null } };
 }
 export const PHRASE = "CONFIRMAR";
 
@@ -27,6 +28,8 @@ export function ConfirmModal({ req, onAnswer }: { req: ConfirmReq; onAnswer: (al
         <p id="cf-desc" class="cf-desc">{req.description}</p>
         <p class="muted small">Accion: <b>{req.kind}</b> · origen: {req.origin} · vence en {left} s</p>
         {req.tainted && <p class="warn" role="note">Esta accion se origino tras leer contenido no confiable (web o herramientas).</p>}
+        {req.extra?.gesture?.available && <p class="small gesture-hint" role="note">Con la cámara: mano abierta 1,5 s para activar y luego pulgar arriba (autorizar) o abajo (denegar).</p>}
+        {req.extra?.gesture && !req.extra.gesture.available && req.extra.gesture.blocked && <p class="small muted">Gestos: {req.extra.gesture.blocked}.</p>}
         {Object.keys(req.details).length > 0 && <dl class="small">{Object.entries(req.details).map(([k, v]) => <><dt>{k}</dt><dd>{v}</dd></>)}</dl>}
         {req.payload !== null && <><h3 class="small muted">Contenido exacto</h3><pre class="payload" tabIndex={0}>{req.payload}</pre></>}
         {req.explicit && (

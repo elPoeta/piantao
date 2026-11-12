@@ -51,8 +51,11 @@ class WebGateway:
         self.port = cfg.port
         self.chat: Any = None
         self.voice: Any = None
+        self.vision: Any = None
+        self.hand_model: Path | None = None  # modelo de manos de MediaPipe (se sirve desde models/, no va en el parche)
         self.ctx_handlers: dict[str, Callable[[dict[str, Any], Any], Awaitable[Any]]] = {}  # reciben tambien la conexion
-        self.binary_handler: Callable[[Any, bytes], None] | None = None
+        self.binary_handler: Callable[[Any, bytes], None] | None = None   # por defecto
+        self.binary_handlers: dict[int, Callable[[Any, bytes], None]] = {}  # por primer byte (tipo de trama)
         self.disconnect_hooks: list[Callable[[Any], None]] = []
         self._runner: web.AppRunner | None = None
         self._clients: set["_WsClient"] = set()
@@ -67,8 +70,10 @@ class WebGateway:
         app = web.Application(middlewares=[self._guard], client_max_size=64 * 1024)
         app.add_routes([
             web.get("/", self._index), web.get("/api/session", self._session), web.post("/api/pair", self._pair),
-            web.post("/api/logout", self._logout), web.get("/ws", self._ws),
+            web.post("/api/logout", self._logout), web.get("/ws", self._ws), web.get("/vision/hand_landmarker.task", self._hand_model),
         ])
+        if (self.static / "mediapipe").is_dir():
+            app.router.add_static("/mediapipe", self.static / "mediapipe", follow_symlinks=False)
         if (self.static / "assets").is_dir():
             app.router.add_static("/assets", self.static / "assets", follow_symlinks=False)
         self._runner = web.AppRunner(app, access_log=None, handler_cancellation=True)
@@ -139,6 +144,12 @@ class WebGateway:
         if not f.is_file():
             return web.Response(status=503, text="Interfaz no compilada: ejecuta `npm run build` en web/")
         return web.Response(body=f.read_bytes(), content_type="text/html", charset="utf-8")
+
+    async def _hand_model(self, request: web.Request) -> web.StreamResponse:
+        f = self.hand_model
+        if f is None or not f.is_file():
+            return web.Response(status=404, text="falta el modelo de manos: python scripts/fetch_models.py")
+        return web.FileResponse(f, headers={"Content-Type": "application/octet-stream"})
 
     async def _session(self, request: web.Request) -> web.Response:
         return web.json_response({"paired": self._sid(request) is not None, "v": VERSION})
@@ -307,10 +318,12 @@ class _WsClient:
             async for m in self.ws:
                 if m.type != WSMsgType.TEXT:
                     if m.type == WSMsgType.BINARY:
-                        if self.gw.binary_handler is None:
+                        fn = self.gw.binary_handlers.get(m.data[0]) if m.data else None
+                        fn = fn or self.gw.binary_handler
+                        if fn is None:
                             self.send({"t": "reply", "id": None, "ok": False, "error": "binario no soportado"})
                         elif self.gw.sessions.verify_sid(self.sid):
-                            self.gw.binary_handler(self, m.data)
+                            fn(self, m.data)
                         else:
                             break
                         continue
