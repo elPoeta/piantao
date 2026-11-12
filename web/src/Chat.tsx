@@ -1,3 +1,4 @@
+import { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Markdown } from "./markdown";
 
@@ -59,8 +60,8 @@ function Bubble({ m }: { m: Msg }) {
   );
 }
 
-export function Chat({ msgs, busy, connected, onSend, onStop, onNew }:
-  { msgs: Msg[]; busy: boolean; connected: boolean; onSend: (t: string) => void; onStop: () => void; onNew: () => void }) {
+export function Chat({ msgs, busy, connected, onSend, onStop, onNew, extra }:
+  { msgs: Msg[]; busy: boolean; connected: boolean; onSend: (t: string) => void; onStop: () => void; onNew: () => void; extra?: ComponentChildren }) {
   const [text, setText] = useState("");
   const list = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -80,6 +81,7 @@ export function Chat({ msgs, busy, connected, onSend, onStop, onNew }:
         {msgs.length === 0 && <p class="muted center">Escribile algo a Piantao.</p>}
         {msgs.map((m) => <Bubble key={m.id} m={m} />)}
       </div>
+      {extra}
       <form class="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
         <textarea value={text} rows={2} maxLength={8000} placeholder={connected ? "Mensaje (Enter envia, Shift+Enter salto de linea)" : "Sin conexion..."}
           aria-label="Mensaje" onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}

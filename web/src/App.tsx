@@ -3,6 +3,8 @@ import { Link, PiantaoEvent, Snapshot, logout, sessionPaired } from "./api";
 import { Chat, Msg, applyChat } from "./Chat";
 import { ConfirmModal, ConfirmReq } from "./Confirm";
 import { Pair } from "./Pair";
+import { VoiceBar, VoiceUi } from "./VoiceBar";
+import { VoiceClient, VoiceMode } from "./voice";
 import { Skills } from "./Skills";
 
 type Status = "connecting" | "open" | "closed" | "unauthorized";
@@ -27,6 +29,9 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   const [confirms, setConfirms] = useState<ConfirmReq[]>([]);
   const [notice, setNotice] = useState("");
   const link = useRef<Link>();
+  const voice = useRef<VoiceClient>();
+  const [vui, setVui] = useState<VoiceUi>({ available: false, state: "off", detail: "", level: 0, mode: "ptt", error: "", last: "", readAloud: false, bargeIn: false });
+  const patchVoice = (p: Partial<VoiceUi>) => setVui((v) => ({ ...v, ...p }));
 
   async function loadHistory(l: Link) {
     try {
@@ -40,8 +45,24 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   useEffect(() => {
     const l = new Link();
     link.current = l;
+    const vc = new VoiceClient(l, {
+      onState: (state, detail) => patchVoice({ state, detail: detail ?? "", ...(state === "off" ? { level: 0 } : {}) }),
+      onLevel: (level) => patchVoice({ level }),
+      onTranscript: (last) => patchVoice({ last }),
+      onError: (error) => { patchVoice({ error }); window.setTimeout(() => patchVoice({ error: "" }), 6000); },
+    });
+    voice.current = vc;
+    l.onVoice = (m) => vc.handle(m);
+    l.onBinary = (d) => vc.handleBinary(d);
     l.onSnapshot = setSnap;
-    l.onStatus = (s) => { setStatus(s); if (s === "open") void loadHistory(l); if (s === "unauthorized") onLost(); };
+    l.onStatus = (s) => {
+      setStatus(s);
+      if (s === "open") {
+        void loadHistory(l);
+        l.command("voice_info").then((i) => patchVoice({ available: true, bargeIn: !!i.barge_in })).catch(() => patchVoice({ available: false }));
+      } else if (vc.active) void vc.stop(); // sin conexion el servidor ya apago la voz: se libera el microfono
+      if (s === "unauthorized") onLost();
+    };
     l.onEvent = (e) => {
       setLog((prev) => [e, ...prev].slice(0, 200));
       if (e.kind === "state") setSnap((s) => ({ ...s, state: e.data.state ?? s.state }));
@@ -58,11 +79,12 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       else setConfirms((c) => c.filter((x) => x.id !== m.id));
     };
     l.connect();
-    return () => l.close();
+    return () => { void voice.current?.stop(); l.close(); };
   }, []);
 
   function run(p: Promise<unknown> | undefined) { p?.catch((e: Error) => { setNotice(e.message); window.setTimeout(() => setNotice(""), 5000); }); }
-  const send = (t: string) => run(link.current?.command("chat_send", { text: t }));
+  const send = (t: string) => run(link.current?.command("chat_send", { text: t, speak: vui.readAloud && vui.state !== "off" }));
+  const toggleMic = () => run(vui.state === "off" ? voice.current?.start(vui.mode) : voice.current?.stop());
   const stop = () => run(link.current?.command("chat_interrupt"));
   const fresh = () => run(link.current?.command("chat_new").then(() => setMsgs([])));
   const answer = (id: string, allow: boolean, phrase?: string) =>
@@ -88,7 +110,9 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
         <button class="ghost" onClick={onLogout}>Cerrar sesion</button>
       </header>
       {notice && <p class="notice" role="alert">{notice}</p>}
-      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} /> : (
+      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh}
+        extra={<VoiceBar ui={vui} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggle={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))}
+          onStop={() => run(voice.current?.interrupt())} onReadAloud={(readAloud) => patchVoice({ readAloud })} />} /> : (
         <main class="grid">
           <section class="card"><h2>Sesion</h2>
             <dl>{rows.map(([k, v]) => <><dt>{String(k)}</dt><dd>{String(v)}</dd></>)}</dl>

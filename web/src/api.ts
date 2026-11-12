@@ -32,6 +32,8 @@ export class Link {
   private closed = false;
   onSnapshot: (s: Snapshot) => void = () => {};
   onEvent: (e: PiantaoEvent) => void = () => {};
+  onVoice: (m: Record<string, any>) => void = () => {};
+  onBinary: (d: ArrayBuffer) => void = () => {};
   onChat: (m: Record<string, any>) => void = () => {};
   onConfirm: (m: Record<string, any>) => void = () => {};
   onStatus: (s: "connecting" | "open" | "closed" | "unauthorized") => void = () => {};
@@ -41,14 +43,16 @@ export class Link {
     this.onStatus("connecting");
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     this.ws = ws;
+    ws.binaryType = "arraybuffer";
     ws.onopen = () => { this.retry = 0; this.onStatus("open"); };
     ws.onmessage = (m) => {
-      if (typeof m.data !== "string") return;
+      if (typeof m.data !== "string") { if (m.data instanceof ArrayBuffer) this.onBinary(m.data); return; }
       let msg: any;
       try { msg = JSON.parse(m.data); } catch { return; }
       if (msg.t === "snapshot") this.onSnapshot(msg.data);
       else if (msg.t === "event") this.onEvent({ kind: msg.kind, data: msg.data, ts: msg.ts });
       else if (msg.t === "chat") this.onChat(msg);
+      else if (msg.t === "voice") this.onVoice(msg);
       else if (msg.t === "confirm" || msg.t === "confirm_done") this.onConfirm(msg);
       else if (msg.t === "reply") this.settle(msg);
     };
@@ -60,6 +64,12 @@ export class Link {
       const wait = Math.min(10000, 500 * 2 ** this.retry++);
       window.setTimeout(() => { if (!this.closed) this.connect(); }, wait);
     };
+  }
+
+  sendBinary(data: ArrayBufferLike | ArrayBufferView): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.ws.bufferedAmount > 1_000_000) return false;
+    this.ws.send(data as ArrayBufferView);
+    return true;
   }
 
   close(): void { this.closed = true; this.ws?.close(); }

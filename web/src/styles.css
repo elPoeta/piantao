@@ -88,3 +88,14 @@ button.stop { background: var(--bad); color: #fff; }
 .badge-invalid, .badge-duplicate { color: var(--bad); border-color: var(--bad); }
 .linklike { background: none; color: var(--accent); padding: 0 0.3rem; font-weight: 400; text-decoration: underline; }
 code { font-family: ui-monospace, monospace; background: #0b1118; border-radius: 4px; padding: 0.05rem 0.3rem; }
+
+/* voz */
+.voicebar { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; margin-top: 0.75rem; background: var(--panel); }
+.voice-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.7rem; }
+.voice-row + .voice-row { margin-top: 0.4rem; }
+.voicebar select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.4rem; font: inherit; }
+button.mic-on { background: var(--bad); color: #fff; }
+button.ptt { background: var(--ok); color: #04121a; touch-action: none; user-select: none; }
+.check { display: flex; align-items: center; gap: 0.3rem; color: var(--muted); }
+.level { width: 8rem; height: 0.7rem; }
+.vstate { font-weight: 600; } .vstate-listening { color: var(--ok); } .vstate-speaking { color: #b388ff; } .vstate-transcribing, .vstate-loading { color: var(--warn); }

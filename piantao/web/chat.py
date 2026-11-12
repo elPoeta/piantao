@@ -97,20 +97,49 @@ class ChatSession:
         self.agent, self.bus, self.broadcast, self.confirmer = agent, bus, broadcast, confirmer
         self._task: asyncio.Task[None] | None = None
         self._turn = 0
+        self.speaker: Any = None  # objeto con begin/feed/end/stop (SpeechPipeline) mientras la voz web esta activa
 
     @property
     def busy(self) -> bool:
         return self._task is not None and not self._task.done()
 
     # -- turno -------------------------------------------------------------------------------------------------------
-    async def _run(self, turn: int, text: str) -> None:
+    async def submit(self, text: str, speak: bool = False, via: str = "web") -> int:
+        """Empieza un turno (texto escrito o transcripcion de voz). Con `speak`, la respuesta tambien se dice en voz alta."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text debe ser un texto no vacio")
+        if len(text) > MAX_USER_TEXT:
+            raise ValueError(f"el mensaje supera {MAX_USER_TEXT} caracteres")
+        if self.busy:
+            raise ValueError("ya hay un turno en curso; interrumpilo o espera")
+        self._turn += 1
+        spk = self.speaker if speak else None
+        self._task = asyncio.create_task(self._run(self._turn, text.strip(), spk, via))
+        return self._turn
+
+    async def interrupt(self, wait: bool = False) -> bool:
+        if not self.busy:
+            return False
+        assert self._task is not None
+        self._task.cancel()
+        if wait:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._task
+        return True
+
+    async def _run(self, turn: int, text: str, spk: Any = None, via: str = "web") -> None:
         send = self.broadcast
         self.bus.set_state("thinking")
-        send({"t": "chat", "ev": "start", "turn": turn, "text": text})
+        send({"t": "chat", "ev": "start", "turn": turn, "text": text, "via": via})
         outcome = "done"
+        if spk is not None:
+            spk.begin()
         try:
             async for ev in self.agent.respond(text):
                 if ev.kind == "text":
+                    if spk is not None:
+                        self.bus.set_state("speaking")
+                        spk.feed(ev.text)
                     send({"t": "chat", "ev": "text", "turn": turn, "text": ev.text})
                 elif ev.kind == "reasoning":
                     send({"t": "chat", "ev": "reasoning", "turn": turn, "text": ev.text})
@@ -132,29 +161,25 @@ class ChatSession:
             send({"t": "chat", "ev": "error", "turn": turn, "error": _clip(str(exc) or type(exc).__name__, 300)})
         finally:
             self.confirmer.deny_all()
-            self.bus.set_state("idle")
+            if spk is not None:
+                if outcome == "done":
+                    spk.end()  # termina de decir lo pendiente; el estado vuelve a idle cuando acaba el audio
+                else:
+                    spk.stop()
+            if spk is None or outcome != "done":
+                self.bus.set_state("idle")
             send({"t": "chat", "ev": "done", "turn": turn, "outcome": outcome})
 
     # -- comandos ----------------------------------------------------------------------------------------------------
     def handlers(self) -> dict[str, Callable[[dict[str, Any]], Any]]:
         async def chat_send(args: dict[str, Any]) -> dict[str, Any]:
-            text = args.get("text")
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError("text debe ser un texto no vacio")
-            if len(text) > MAX_USER_TEXT:
-                raise ValueError(f"el mensaje supera {MAX_USER_TEXT} caracteres")
-            if self.busy:
-                raise ValueError("ya hay un turno en curso; interrumpilo o espera")
-            self._turn += 1
-            self._task = asyncio.create_task(self._run(self._turn, text.strip()))
-            return {"turn": self._turn}
+            speak = args.get("speak", False)
+            if not isinstance(speak, bool):
+                raise ValueError("speak debe ser true o false")
+            return {"turn": await self.submit(args.get("text"), speak=speak and self.speaker is not None)}
 
         async def chat_interrupt(args: dict[str, Any]) -> bool:
-            if not self.busy:
-                return False
-            assert self._task is not None
-            self._task.cancel()
-            return True
+            return await self.interrupt()
 
         async def chat_history(args: dict[str, Any]) -> dict[str, Any]:
             msgs = [{"role": m["role"], "text": m["content"]} for m in self.agent.history

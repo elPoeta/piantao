@@ -425,6 +425,16 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         confirmer.broadcast, confirmer.has_clients = gw.broadcast, lambda: gw.clients > 0
         gw.handlers.update(chat.handlers())  # solo web: el socket del panel no puede chatear ni confirmar
     gw.chat = chat
+    gw.voice = None
+    if chat is not None and wcfg.voice_enabled:
+        from piantao.voice.audio import AudioConfig
+        from piantao.web.voice import WebVoice, load_engines
+
+        gw.voice = WebVoice(chat, bus, AudioConfig.from_config(cfg), lambda: load_engines(cfg), gw.send_to, gw.send_bytes_to,
+                            barge_in=wcfg.voice_barge_in, barge_ms=wcfg.voice_barge_ms)
+        gw.ctx_handlers.update(gw.voice.handlers())
+        gw.binary_handler = gw.voice.on_binary
+        gw.disconnect_hooks.append(gw.voice.on_disconnect)
     if getattr(agent, "skills", None) is not None:
         gw.handlers.update(skills_handlers(agent.skills))  # lectura solamente; aprobar es por terminal
     ui_server.handlers["pair_code"] = pair_code  # solo por el socket privado, nunca por la web
@@ -471,6 +481,8 @@ async def serve(cfg: dict, provider: str | None, model: str | None, resume_last:
     try:
         await stop.wait()
     finally:
+        if getattr(gw, "voice", None) is not None:
+            await gw.voice.close()
         if gw.chat is not None:
             await gw.chat.stop()
         await gw.stop()
