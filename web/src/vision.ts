@@ -4,7 +4,7 @@ import type { HandLandmarker as HandLandmarkerT, NormalizedLandmark } from "@med
 import { Link } from "./api";
 
 const BIN_LANDMARKS = 3;
-const HAND_FPS = 15;       // con mano a la vista
+const HAND_FPS = 24;       // con mano a la vista
 const IDLE_FPS = 5;        // sin mano: solo para que el servidor sepa que no hay nadie
 
 export type VisionState = "off" | "loading" | "on";

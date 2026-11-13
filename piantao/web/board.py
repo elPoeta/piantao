@@ -19,7 +19,7 @@ from ..tools.base import Tool, ToolError
 log = logging.getLogger("piantao.web.board")
 MAX_CARDS = 24
 MAX_TITLE = 80
-MAX_TEXT = 4000
+MAX_TEXT = 20000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 _NAME_OK = re.compile(r"^[\w][\w .-]{0,100}$")

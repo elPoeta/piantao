@@ -53,6 +53,7 @@ class WebGateway:
         self.voice: Any = None
         self.vision: Any = None
         self.board: Any = None
+        self.files: Any = None  # FileBrowser (solo lectura, mismas carpetas que el agente)
         self.hand_model: Path | None = None  # modelo de manos de MediaPipe (se sirve desde models/, no va en el parche)
         self.ctx_handlers: dict[str, Callable[[dict[str, Any], Any], Awaitable[Any]]] = {}  # reciben tambien la conexion
         self.binary_handler: Callable[[Any, bytes], None] | None = None   # por defecto
@@ -72,7 +73,7 @@ class WebGateway:
         app.add_routes([
             web.get("/", self._index), web.get("/api/session", self._session), web.post("/api/pair", self._pair),
             web.post("/api/logout", self._logout), web.get("/ws", self._ws), web.get("/vision/hand_landmarker.task", self._hand_model),
-            web.get("/media/{name}", self._media),
+            web.get("/media/{name}", self._media), web.get("/api/file", self._file),
         ])
         if (self.static / "mediapipe").is_dir():
             app.router.add_static("/mediapipe", self.static / "mediapipe", follow_symlinks=False)
@@ -164,6 +165,18 @@ class WebGateway:
         except ValueError:
             return web.Response(status=404, text="imagen no disponible")
         return web.FileResponse(path, headers={"Content-Type": self.board.image_type(path.name), "Cache-Control": "private, max-age=60"})
+
+    async def _file(self, request: web.Request) -> web.StreamResponse:
+        """Imagenes de las carpetas autorizadas para el explorador del holograma (solo con sesion, solo lectura)."""
+        if self._sid(request) is None:
+            return web.Response(status=401, text="sin sesion")
+        if self.files is None:
+            return web.Response(status=404, text="sin explorador")
+        try:
+            path, mime = self.files.image_path(request.query.get("root", ""), request.query.get("path", ""))
+        except ValueError:
+            return web.Response(status=404, text="imagen no disponible")
+        return web.FileResponse(path, headers={"Content-Type": mime, "Cache-Control": "private, max-age=60"})
 
     async def _session(self, request: web.Request) -> web.Response:
         return web.json_response({"paired": self._sid(request) is not None, "v": VERSION})

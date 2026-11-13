@@ -515,9 +515,9 @@ def test_synthetic_landmarks_over_real_websocket_drive_palm_and_confirmation(bro
         """
         page.evaluate(f"window.__hand = {hand}")
         page.evaluate("""async () => { for (let i = 0; i < 40; i++) { window.__ws.send(window.__hand('open')); await new Promise(r => setTimeout(r, 50)); } }""")
-        page.wait_for_function("window.__msgs.some(m => m.t === 'vision' && m.ev === 'gesture' && m.name === 'palm')", timeout=5000)
+        until(page, "() => window.__msgs.some(m => m.t === 'vision' && m.ev === 'gesture' && m.name === 'palm')", 5000)
         assert srv.interrupts, "la palma debe interrumpir"
-        page.wait_for_function("window.__msgs.some(m => m.t === 'vision' && m.ev === 'status' && m.pose === 'open_palm')", timeout=3000)
+        until(page, "() => window.__msgs.some(m => m.t === 'vision' && m.ev === 'status' && m.pose === 'open_palm')", 3000)
 
         async_confirm = {}
 
@@ -526,12 +526,12 @@ def test_synthetic_landmarks_over_real_websocket_drive_palm_and_confirmation(bro
             async_confirm["r"] = await srv.gestured(req, False)
 
         fut = __import__("asyncio").run_coroutine_threadsafe(ask(), srv.loop)
-        page.wait_for_function("window.__msgs.some(m => m.t === 'confirm' && m.extra && m.extra.gesture && m.extra.gesture.available)", timeout=5000)
+        until(page, "() => window.__msgs.some(m => m.t === 'confirm' && m.extra && m.extra.gesture && m.extra.gesture.available)", 5000)
         page.evaluate("""async () => { for (let i = 0; i < 40; i++) { window.__ws.send(window.__hand('open')); await new Promise(r => setTimeout(r, 50)); } }""")
-        page.wait_for_function("window.__msgs.some(m => m.t === 'vision' && m.ev === 'gesture' && m.name === 'activate')", timeout=5000)
+        until(page, "() => window.__msgs.some(m => m.t === 'vision' && m.ev === 'gesture' && m.name === 'activate')", 5000)
         page.evaluate("""async () => { for (let i = 0; i < 40; i++) { window.__ws.send(window.__hand('up')); await new Promise(r => setTimeout(r, 50)); } }""")
         assert fut.result(10) is None and async_confirm["r"] is True
-        page.wait_for_function("window.__msgs.some(m => m.t === 'confirm_done')", timeout=3000)
+        until(page, "() => window.__msgs.some(m => m.t === 'confirm_done')", 3000)
         # basura binaria: se ignora y la conexion sigue viva
         page.evaluate("window.__ws.send(new Uint8Array([3, 1, 2, 3]))")
         assert page.evaluate("window.__cmd('vision_info', {}).then(r => r.ok)") is True
@@ -557,6 +557,15 @@ class BoardServer(ChatServer):
             return [{"ts": 1.0, "tool": "web_fetch", "decision": "allow"}]
 
         self.gw.handlers["query"] = query
+        from piantao.web import FileBrowser
+
+        ws = tmp_path / "workspace"
+        (ws / "docs").mkdir(parents=True)
+        (ws / "docs" / "informe.md").write_text("Informe <i>final</i>\nlinea dos", encoding="utf-8")
+        (ws / "foto.png").write_bytes(PNG_1PX)
+        (ws / "notas.txt").write_text("hola notas", encoding="utf-8")
+        self.gw.files = FileBrowser([ws])
+        self.gw.handlers.update(self.gw.files.handlers())
 
     def add(self, **kw):
         done = threading.Event()
@@ -575,6 +584,18 @@ def _bright(png: bytes, x0, y0, x1, y1) -> int:
     Image = pytest.importorskip("PIL.Image")
     im = Image.open(io.BytesIO(png)).convert("RGB").crop((x0, y0, x1, y1))
     return sum(1 for px in im.getdata() if sum(px) > 150)
+
+
+def until(page, fn: str, timeout_ms: int) -> None:
+    """Espera una condicion JS sin page.wait_for_function (que evalua texto y la CSP estricta lo bloquea a veces)."""
+    import time
+
+    end = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < end:
+        if page.evaluate(fn):
+            return
+        page.wait_for_timeout(50)
+    raise AssertionError(f"condicion no cumplida: {fn}")
 
 
 def open_holo(page, srv):
@@ -635,12 +656,20 @@ def test_holo_mouse_drags_a_card_and_orbit_opens_a_system_card(browser, tmp_path
         after = page.screenshot()
         assert _bright(after, 60, 230, 360, 340) < 120          # ya no esta en su lugar
         assert _bright(after, 700, 300, 1000, 460) > 300        # esta donde la soltamos
-        # orbita "Auditoria": a la derecha del anillo (centro 640, y 110) -> 752
+        # orbita "Archivos": a la derecha del anillo (centro 640, y 110) -> 752; los mosaicos aparecen y un toque abre un archivo
         page.mouse.move(752, 110); page.wait_for_timeout(80); page.mouse.down(); page.wait_for_timeout(50); page.mouse.up()
+        page.wait_for_selector("nav.holo-files")
+        assert "docs" in page.inner_text("nav.holo-files") and "foto.png" in page.inner_text("nav.holo-files")
+        page.wait_for_timeout(400)
+        assert _bright(page.screenshot(), 16, 170, 400, 330) > 400  # mosaicos dibujados en el canvas
+        page.click("nav.holo-files >> text=notas.txt")
+        page.wait_for_selector(".holo-reader")
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".holo-reader", state="detached")
         page.wait_for_selector(".holo-list summary:has-text('Tarjetas (2)')")
         page.click(".holo-list summary")
-        assert "Auditoría reciente" in page.inner_text(".holo-list")
-        assert srv.board.cards and len(srv.board.cards) == 1    # la tarjeta de sistema es local: no se guarda en el servidor
+        assert "notas.txt" in page.inner_text(".holo-list")
+        assert len(srv.board.cards) == 1    # las tarjetas de archivo son locales: no se guardan en el servidor
         assert problems == [], problems
 
 
@@ -662,3 +691,78 @@ def test_chat_answer_can_be_pinned_as_a_card(browser, tmp_path):
         assert card["origin"] == "user" and card["title"] == "Plan" and "paso uno" in card["text"]
         page.click("role=tab[name='Holo']")
         page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
+
+
+def test_holo_file_browser_navigates_opens_images_and_blocks_escape(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with BoardServer(tmp_path, script) as srv:
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = open_holo(page, srv)
+        failed = []
+        page.on("response", lambda r: failed.append(r.url) if "/api/file" in r.url and r.status != 200 else None)
+        page.click("text=Archivos >> nth=0")
+        page.wait_for_selector("nav.holo-files")
+        page.click("nav.holo-files >> text=docs")
+        page.wait_for_selector("nav.holo-files >> text=informe.md")
+        page.click("nav.holo-files >> text=informe.md")
+        page.wait_for_selector(".holo-reader")
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".holo-reader", state="detached")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
+        page.click("nav.holo-files >> text=Subir")
+        page.wait_for_selector("nav.holo-files >> text=foto.png")
+        page.click("nav.holo-files >> text=foto.png")
+        page.wait_for_selector(".holo-reader")
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".holo-reader", state="detached")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (2)')")
+        page.wait_for_timeout(500)
+        assert failed == []
+        assert page.evaluate("window.__pwned") is None
+        # cerrar el explorador quita la lista
+        page.click("button:text-is('Archivos')")
+        page.wait_for_selector("nav.holo-files", state="detached")
+        assert problems == [], problems
+        # el servidor no deja salir de la carpeta
+        res = page.evaluate("""async () => { const r = await fetch('/api/file?root=0&path=../x.png'); return r.status; }""")
+        assert res == 404
+
+
+def test_holo_reader_opens_on_click_scrolls_and_closes(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with BoardServer(tmp_path, script) as srv:
+        long = "\n".join(f"linea {i} del documento largo" for i in range(300))
+        (tmp_path / "workspace" / "largo.txt").write_text(long, encoding="utf-8")
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = open_holo(page, srv)
+        page.click("text=Archivos >> nth=0")
+        page.click("nav.holo-files >> text=largo.txt")
+        page.wait_for_selector(".holo-reader")
+        top0 = page.evaluate("document.querySelector('.holo-reader-body').scrollTop")
+        page.mouse.move(640, 400)
+        page.mouse.wheel(0, 600)
+        page.wait_for_timeout(300)
+        assert page.evaluate("document.querySelector('.holo-reader-body').scrollTop") > top0 + 200
+        assert page.evaluate("document.querySelector('.holo-reader-body').scrollHeight") > 3000
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".holo-reader", state="detached")
+        # cerrar el explorador y su tarjeta; clic en una tarjeta del agente la abre en el lector con el texto COMPLETO
+        page.click("button:text-is('Archivos')")
+        page.click(".holo-list summary")
+        page.click(".holo-list li button")
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (0)')")
+        srv.add(title="Informe", text="parrafo " * 300)
+        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
+        page.wait_for_timeout(500)
+        page.mouse.move(166, 380); page.wait_for_timeout(120)
+        page.mouse.down(); page.wait_for_timeout(60); page.mouse.up()
+        page.wait_for_selector(".holo-reader")
+        assert page.text_content(".holo-reader h2") == "Informe"
+        assert page.inner_text(".holo-reader-body").count("parrafo") == 300
+        page.click(".holo-x")
+        page.wait_for_selector(".holo-reader", state="detached")
+        assert problems == [], problems

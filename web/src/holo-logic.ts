@@ -5,13 +5,22 @@
 
 export interface V2 { x: number; y: number }
 export interface Lm { x: number; y: number; z?: number }
-export interface Viewport { vw: number; vh: number; cw: number; ch: number; mirror: boolean }
+export interface Viewport { vw: number; vh: number; cw: number; ch: number; mirror: boolean; amp?: number }
 
-export const PINCH_ON = 0.3;     // distancia pulgar-indice / tamaño de la palma para empezar a pellizcar
-export const PINCH_OFF = 0.5;    // para soltar (histeresis: evita parpadeos)
+/** Distancia pulgar-indice / tamaño de la palma. `on`: empieza el pellizco; `off`: se suelta (histeresis). Ajustable. */
+export const tuning = { on: 0.34, off: 0.52 };
+export function setPinchSensitivity(on: number): void { tuning.on = clamp(on, 0.2, 0.6); tuning.off = tuning.on + 0.18; }
+export const GRAB_MARGIN = 70;       // px alrededor de una tarjeta donde un pellizco todavia la agarra (el mas cercano gana)
+export const TAP_MAX_MOVE = 45; export const TAP_MAX_S = 0.6;
+export const LOOKBACK_S = 0.12;      // el objetivo de un pellizco se busca tambien donde estaba el dedo justo antes de cerrarse
+export const DWELL_S = { tap: 0.85, orbit: 1.0, ring: 1.2, close: 1.2, reader_close: 1.0 };
+export const DWELL_RADIUS = 38;      // el cursor puede temblar hasta esto sin perder el progreso
+export const SCROLL_BAND = 0.16;     // fraccion superior/inferior del lector que desplaza al apuntar
+export const SCROLL_SPEED = 900;     // px/s a tope de franja
+export const REACH = 1.4;            // amplificacion del alcance de la mano alrededor del centro
 export const CARD_SCALE = { min: 0.4, max: 3.2 };
 export const BOARD_SCALE = { min: 0.4, max: 3 };
-const SMOOTH = 0.55;
+const SMOOTH = 0.8;
 
 export const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 const dist = (a: V2, b: V2): number => Math.hypot(a.x - b.x, a.y - b.y);
@@ -20,7 +29,28 @@ const dist = (a: V2, b: V2): number => Math.hypot(a.x - b.x, a.y - b.y);
 export function toScreen(p: V2, v: Viewport): V2 {
   const s = Math.max(v.cw / v.vw, v.ch / v.vh);
   const dw = v.vw * s, dh = v.vh * s;
-  return { x: (v.cw - dw) / 2 + (v.mirror ? 1 - p.x : p.x) * dw, y: (v.ch - dh) / 2 + p.y * dh };
+  let x = (v.cw - dw) / 2 + (v.mirror ? 1 - p.x : p.x) * dw, y = (v.ch - dh) / 2 + p.y * dh;
+  if (v.amp && v.amp !== 1) { x = clamp(v.cw / 2 + (x - v.cw / 2) * v.amp, 0, v.cw); y = clamp(v.ch / 2 + (y - v.ch / 2) * v.amp, 0, v.ch); }
+  return { x, y };
+}
+
+/** Filtro One Euro: suaviza fuerte con la mano quieta y casi nada cuando se mueve rapido (menos temblor sin retraso). */
+export class OneEuro {
+  private px: V2 | null = null; private dx: V2 = { x: 0, y: 0 }; private t = 0;
+  constructor(private minCutoff = 1.6, private beta = 0.008, private dCutoff = 1.0) {}
+  private alpha(cutoff: number, dt: number): number { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  filter(p: V2, now: number): V2 {
+    if (!this.px || now - this.t > 0.5) { this.px = { ...p }; this.dx = { x: 0, y: 0 }; this.t = now; return { ...p }; }
+    const dt = Math.max(1e-3, now - this.t); this.t = now;
+    const ad = this.alpha(this.dCutoff, dt);
+    const raw = { x: (p.x - this.px.x) / dt, y: (p.y - this.px.y) / dt };
+    this.dx = { x: this.dx.x + ad * (raw.x - this.dx.x), y: this.dx.y + ad * (raw.y - this.dx.y) };
+    const speed = Math.hypot(this.dx.x, this.dx.y);
+    const a = this.alpha(this.minCutoff + this.beta * speed, dt);
+    this.px = { x: this.px.x + a * (p.x - this.px.x), y: this.px.y + a * (p.y - this.px.y) };
+    return { ...this.px };
+  }
+  reset(): void { this.px = null; }
 }
 
 export interface HandMetrics { palm: number; pinch: number; thumb: V2; index: V2; cursor: V2 }
@@ -36,16 +66,17 @@ export function handMetrics(lm: Lm[], aspect: number): HandMetrics | null {
   return { palm, pinch, thumb, index, cursor: { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 } };
 }
 
+/** Pellizco con histeresis y "merito" de 2 cuadros seguidos (un cuadro ruidoso no pellizca ni suelta). */
 export class PinchFilter {
   on = false;
-  private ema: number | null = null;
+  private run = 0;
   update(ratio: number): boolean {
-    this.ema = this.ema === null ? ratio : 0.5 * this.ema + 0.5 * ratio;
-    if (!this.on && this.ema < PINCH_ON) this.on = true;
-    else if (this.on && this.ema > PINCH_OFF) this.on = false;
+    const want = this.on ? ratio < tuning.off : ratio < tuning.on; // ¿el cuadro dice "pellizcado"?
+    if (want === this.on) { this.run = 0; return this.on; }
+    if (++this.run >= 2) { this.on = want; this.run = 0; }
     return this.on;
   }
-  reset(): void { this.on = false; this.ema = null; }
+  reset(): void { this.on = false; this.run = 0; }
 }
 
 export interface HandSample { cursor: V2; pinching: boolean }
@@ -54,8 +85,11 @@ export interface HandSample { cursor: V2; pinching: boolean }
 export class HandsInput {
   private wrists: (V2 | null)[] = [null, null];
   private filters = [new PinchFilter(), new PinchFilter()];
+  private smooth = [new OneEuro(), new OneEuro()];
+  private clock = 0;
 
-  process(hands: Lm[][], aspect: number, vp: Viewport): (HandSample | null)[] {
+  process(hands: Lm[][], aspect: number, vp: Viewport, now?: number): (HandSample | null)[] {
+    const t = now ?? (this.clock += 1 / 24);
     const ms = hands.map((h) => handMetrics(h, aspect)).filter((m): m is HandMetrics => m !== null).slice(0, 2);
     const wrist = (i: number): V2 => ({ x: hands[i][0].x, y: hands[i][0].y });
     const out: (HandSample | null)[] = [null, null];
@@ -78,26 +112,31 @@ export class HandsInput {
       const slot = slotFor[i];
       used.add(slot);
       this.wrists[slot] = wrist(i);
-      out[slot] = { cursor: toScreen(m.cursor, vp), pinching: this.filters[slot].update(m.pinch) };
+      out[slot] = { cursor: this.smooth[slot].filter(toScreen(m.cursor, vp), t), pinching: this.filters[slot].update(m.pinch) };
     });
-    for (const s of [0, 1]) if (!used.has(s)) { this.wrists[s] = null; this.filters[s].reset(); }
+    for (const s of [0, 1]) if (!used.has(s)) { this.wrists[s] = null; this.filters[s].reset(); this.smooth[s].reset(); }
     return out;
   }
 
-  reset(): void { this.wrists = [null, null]; this.filters.forEach((f) => f.reset()); }
+  reset(): void { this.wrists = [null, null]; this.filters.forEach((f) => f.reset()); this.smooth.forEach((f) => f.reset()); }
 }
 
 // -- tablero --------------------------------------------------------------------------------------------------------
 export interface CardModel {
   id: string; x: number; y: number; w: number; h: number; scale: number; rot: number; z: number; vx: number; vy: number;
-  held: number | null; hover: boolean;
+  held: number | null; hover: boolean; closable: boolean;
 }
 export interface RingModel { x: number; y: number; r: number }
 export interface OrbitItem { id: string; x: number; y: number; r: number }
-export type HoloEvent = { type: "close"; id: string } | { type: "ring" } | { type: "orbit"; id: string } | { type: "grab"; id: string } | { type: "drop"; id: string };
+export type HoloEvent = { type: "close"; id: string } | { type: "ring" } | { type: "orbit"; id: string } | { type: "grab"; id: string } | { type: "drop"; id: string } | { type: "tap"; id: string }
+  | { type: "scroll"; dy: number } | { type: "reader_close" };
 
-export interface Slot { visible: boolean; pinching: boolean; cursor: V2; grab: string | null; off: V2; hover: string | null; last: V2; lastT: number }
-const newSlot = (): Slot => ({ visible: false, pinching: false, cursor: { x: 0, y: 0 }, grab: null, off: { x: 0, y: 0 }, hover: null, last: { x: 0, y: 0 }, lastT: 0 });
+export interface Slot {
+  visible: boolean; pinching: boolean; cursor: V2; grab: string | null; off: V2; hover: string | null; last: V2; lastT: number; start: V2; startT: number;
+  hist: { t: number; x: number; y: number }[]; dwell: number; dwellKey: string | null; dwellAnchor: V2; dwellT0: number; dwellDone: string | null; scrollLast: V2 | null;
+}
+const newSlot = (): Slot => ({ visible: false, pinching: false, cursor: { x: 0, y: 0 }, grab: null, off: { x: 0, y: 0 }, hover: null, last: { x: 0, y: 0 }, lastT: 0, start: { x: 0, y: 0 }, startT: 0,
+  hist: [], dwell: 0, dwellKey: null, dwellAnchor: { x: 0, y: 0 }, dwellT0: 0, dwellDone: null, scrollLast: null });
 
 interface Zoom {
   d0: number; a0: number; target: string | "board"; s0: number; r0: number; world0: V2; mid0: V2; t0: V2;
@@ -113,22 +152,66 @@ export class Interaction {
   slots: Slot[] = [newSlot(), newSlot(), newSlot()];
   events: HoloEvent[] = [];
   zoom: Zoom | null = null;
+  /** Rectangulo (px de pantalla) del lector de documentos cuando esta abierto: tiene prioridad sobre todo el tablero. */
+  reader: { x: number; y: number; w: number; h: number } | null = null;
   cw = 800; ch = 600;
   private zc = 1;
   private placed = 0;
 
   setSize(cw: number, ch: number): void { this.cw = cw; this.ch = ch; this.ring = { x: cw / 2, y: Math.min(110, ch * 0.2), r: 42 }; }
 
-  addCard(id: string, w: number, h: number): CardModel {
-    const k = this.placed++;
-    const cols = Math.max(1, Math.floor((this.cw - 80) / (w + 24)));
-    const c: CardModel = {
-      id, w, h, scale: 1, rot: 0, z: ++this.zc, vx: 0, vy: 0, held: null, hover: false,
-      x: 60 + w / 2 + (k % cols) * (w + 24), y: Math.min(this.ch - h / 2 - 20, 230 + h / 2 + Math.floor(k / cols) * 40),
-    };
+  /** Coloca la tarjeta en el primer hueco libre de la pantalla (debajo del anillo y sobre la barra inferior). */
+  addCard(id: string, w: number, h: number, opts: { closable?: boolean } = {}): CardModel {
+    const c: CardModel = { id, w, h, scale: 1, rot: 0, z: ++this.zc, vx: 0, vy: 0, held: null, hover: false, closable: opts.closable !== false, x: 0, y: 0 };
+    const p = this.freeSpot(w, h);
+    c.x = p.x; c.y = p.y;
     this.cards.set(id, c);
+    this.placed++;
     return c;
   }
+
+  private area(): { x0: number; y0: number; x1: number; y1: number } {
+    return { x0: 16, y0: Math.min(this.ring.y + this.ring.r + 24, this.ch * 0.3), x1: this.cw - 16, y1: this.ch - 84 };
+  }
+
+  private freeSpot(w: number, h: number, skip?: Set<string>): V2 {
+    const a = this.area(), gap = 14;
+    const boxes = [...this.cards.values()].filter((c) => !skip?.has(c.id)).map((c) => {
+      const s = this.toScreenFromBoard({ x: c.x, y: c.y });
+      return { x: s.x, y: s.y, hw: (c.w * c.scale * this.board.scale) / 2 + gap, hh: (c.h * c.scale * this.board.scale) / 2 + gap };
+    });
+    const free = (x: number, y: number) => boxes.every((b) => Math.abs(b.x - x) >= b.hw + w / 2 || Math.abs(b.y - y) >= b.hh + h / 2);
+    // candidatos: esquina del area y pegados (con `gap`) a las tarjetas existentes; prueba fila por fila, de izquierda a derecha
+    const xs = [a.x0 + w / 2, ...boxes.map((b) => b.x + b.hw + w / 2)].filter((x) => x <= a.x1 - w / 2).sort((p, q) => p - q);
+    const ys = [a.y0 + h / 2, ...boxes.map((b) => b.y + b.hh + h / 2)].filter((y) => y <= a.y1 - h / 2).sort((p, q) => p - q);
+    for (const y of ys) for (const x of xs) if (free(x, y)) return this.toBoard({ x, y });
+    const k = this.placed % 8; // sin hueco: en cascada, siempre dentro de la pantalla
+    return this.toBoard({ x: clamp(a.x0 + w / 2 + 30 * k, w / 2, this.cw - w / 2), y: clamp(a.y0 + h / 2 + 24 * k, h / 2, this.ch - h / 2 - 70) });
+  }
+
+  /** Reordena las tarjetas en una grilla que entra entera en pantalla (las achica hasta 0,4× si hace falta). Vuelve la vista a 1:1. */
+  arrange(ids?: string[]): void {
+    this.resetView();
+    const list = [...this.cards.values()].filter((c) => !ids || ids.includes(c.id)).sort((p, q) => p.z - q.z);
+    if (list.length === 0) return;
+    const a = this.area(), gap = 14;
+    for (let f = 1; f >= 0.4 - 1e-9; f -= 0.05) {
+      const pos: V2[] = [];
+      let x = a.x0, y = a.y0, rowH = 0, ok = true;
+      for (const c of list) {
+        const w = c.w * f, h = c.h * f;
+        if (x + w > a.x1 && x > a.x0) { x = a.x0; y += rowH + gap; rowH = 0; }
+        if (y + h > a.y1) { ok = false; break; }
+        pos.push({ x: x + w / 2, y: y + h / 2 });
+        x += w + gap; rowH = Math.max(rowH, h);
+      }
+      if (ok || f < 0.4 + 1e-9) {
+        list.forEach((c, i) => { const p = pos[i] ?? { x: this.cw / 2, y: this.ch / 2 }; c.scale = f; c.rot = 0; c.x = p.x; c.y = p.y; c.vx = c.vy = 0; });
+        return;
+      }
+    }
+  }
+
   removeCard(id: string): void {
     this.cards.delete(id);
     for (const s of this.slots) if (s.grab === id) s.grab = null;
@@ -148,11 +231,16 @@ export class Interaction {
     return { x: (dx * cos - dy * sin) / c.scale, y: (dx * sin + dy * cos) / c.scale };
   }
 
-  cardAt(screen: V2): CardModel | null {
-    let best: CardModel | null = null;
+  /** Tarjeta bajo el punto; con `margin` (px de pantalla) tambien la que esta cerca: pellizcar a medias sobre el borde la agarra. */
+  cardAt(screen: V2, margin = 0): CardModel | null {
+    let best: CardModel | null = null, bestD = Infinity;
     for (const c of this.cards.values()) {
       const l = this.localOf(c, screen);
-      if (Math.abs(l.x) <= c.w / 2 && Math.abs(l.y) <= c.h / 2 && (!best || c.z > best.z)) best = c;
+      const m = margin / (c.scale * this.board.scale);
+      const dx = Math.max(0, Math.abs(l.x) - c.w / 2), dy = Math.max(0, Math.abs(l.y) - c.h / 2);
+      if (dx > m || dy > m) continue;
+      const d = Math.hypot(dx, dy);
+      if (d < bestD - 1e-6 || (Math.abs(d - bestD) <= 1e-6 && best && c.z > best.z)) { best = c; bestD = d; }
     }
     return best;
   }
@@ -160,7 +248,7 @@ export class Interaction {
   /** ¿El punto cae sobre el boton de cerrar (esquina superior derecha) de la tarjeta? */
   onClose(c: CardModel, screen: V2): boolean {
     const l = this.localOf(c, screen);
-    return Math.hypot(l.x - (c.w / 2 - 20), l.y - (-c.h / 2 + 20)) <= 17;
+    return c.closable && Math.hypot(l.x - (c.w / 2 - 20), l.y - (-c.h / 2 + 20)) <= 22;
   }
 
   private overUi(p: V2): { type: "orbit"; id: string } | { type: "ring" } | null {
@@ -174,29 +262,106 @@ export class Interaction {
   update(samples: (HandSample | null)[], now: number): HoloEvent[] {
     this.events = [];
     const dt = this.slots.some((s) => s.lastT) ? Math.min(0.1, Math.max(0.001, now - Math.max(...this.slots.map((s) => s.lastT)))) : 0.016;
-    for (let i = 0; i < 3; i++) this.updateSlot(i, samples[i] ?? null, now);
-    this.updateZoom();
+    for (let i = 0; i < 3; i++) this.updateSlot(i, samples[i] ?? null, now, dt);
+    if (!this.reader) this.updateZoom();
     this.stepInertia(dt);
     for (const c of this.cards.values()) c.hover = this.slots.some((s) => s.visible && s.hover === c.id);
     return this.events;
   }
 
-  private updateSlot(i: number, s: HandSample | null, now: number): void {
+  private histAt(slot: Slot, t: number): V2 {
+    for (const h of slot.hist) if (h.t >= t) return { x: h.x, y: h.y };
+    return { ...slot.cursor };
+  }
+
+  private target(p: V2): { over: ReturnType<Interaction["overUi"]>; card: CardModel | null } {
+    const over = this.overUi(p);
+    return { over, card: over ? null : this.cardAt(p, GRAB_MARGIN) };
+  }
+
+  private updateSlot(i: number, s: HandSample | null, now: number, dt: number): void {
     const slot = this.slots[i];
     if (!s) {
-      if (slot.pinching) this.release(i, now);
-      slot.visible = false; slot.hover = null;
+      if (slot.pinching) this.release(i, now, true); // mano perdida: no cuenta como toque
+      slot.visible = false; slot.hover = null; slot.hist = []; this.resetDwell(slot); slot.scrollLast = null;
       return;
     }
     const first = !slot.visible;
     slot.visible = true;
     slot.cursor = first ? { ...s.cursor } : { x: slot.cursor.x + SMOOTH * (s.cursor.x - slot.cursor.x), y: slot.cursor.y + SMOOTH * (s.cursor.y - slot.cursor.y) };
-    const over = this.overUi(slot.cursor);
-    const card = over ? null : this.cardAt(slot.cursor);
-    slot.hover = card ? card.id : null;
-    if (s.pinching && !slot.pinching) { slot.pinching = true; this.pinchStart(i, slot, over, card, now); }
-    else if (!s.pinching && slot.pinching) this.release(i, now);
+    slot.hist.push({ t: now, x: slot.cursor.x, y: slot.cursor.y });
+    while (slot.hist.length > 2 && now - slot.hist[0].t > 0.4) slot.hist.shift();
+    if (this.reader) { this.readerSlot(i, slot, s, now, dt); return; }
+    const here = this.target(slot.cursor);
+    slot.hover = here.card ? here.card.id : null;
+    if (s.pinching && !slot.pinching) {
+      slot.pinching = true; this.resetDwell(slot);
+      // con la mano, el objetivo es lo que hay donde estaba el dedo un instante ANTES de cerrarse (al cerrar, el cursor se corre)
+      let t = here;
+      if (i < 2) { const past = this.target(this.histAt(slot, now - LOOKBACK_S)); if (past.over || past.card) t = past; }
+      this.pinchStart(i, slot, t.over, t.card, now);
+    } else if (!s.pinching && slot.pinching) this.release(i, now);
     else if (slot.pinching && slot.grab && !this.zoom) this.drag(slot, now);
+    if (i < 2 && !slot.pinching && !this.zoom) this.dwellStep(slot, here, now); else if (slot.pinching) this.resetDwell(slot);
+  }
+
+  // -- permanencia ("clic" apuntando y quedandose quieto) ---------------------------------------------------------
+  private resetDwell(slot: Slot): void { slot.dwell = 0; slot.dwellKey = null; slot.dwellDone = null; }
+
+  private dwellStep(slot: Slot, here: { over: ReturnType<Interaction["overUi"]>; card: CardModel | null }, now: number): void {
+    let key: string | null = null, dur = DWELL_S.tap;
+    if (here.over) { key = here.over.type === "ring" ? "ring" : `orbit:${here.over.id}`; dur = here.over.type === "ring" ? DWELL_S.ring : DWELL_S.orbit; }
+    else {
+      const c = this.cardAt(slot.cursor, 0);
+      if (c) { if (this.onClose(c, slot.cursor)) { key = `close:${c.id}`; dur = DWELL_S.close; } else { key = `tap:${c.id}`; } }
+    }
+    this.dwellRun(slot, key, dur, now);
+  }
+
+  private dwellRun(slot: Slot, key: string | null, dur: number, now: number): void {
+    if (!key) { this.resetDwell(slot); return; }
+    if (key !== slot.dwellKey) { slot.dwellKey = key; slot.dwellAnchor = { ...slot.cursor }; slot.dwellT0 = now; slot.dwell = 0; if (slot.dwellDone !== key) slot.dwellDone = null; return; }
+    if (slot.dwellDone === key) { slot.dwell = 0; return; } // ya disparo: hay que salir del objetivo para volver a usarlo
+    if (dist(slot.cursor, slot.dwellAnchor) > DWELL_RADIUS) { slot.dwellAnchor = { ...slot.cursor }; slot.dwellT0 = now; slot.dwell = 0; return; }
+    slot.dwell = clamp((now - slot.dwellT0) / dur, 0, 1);
+    if (slot.dwell < 1) return;
+    slot.dwellDone = key; slot.dwell = 0;
+    if (key === "ring") this.events.push({ type: "ring" });
+    else if (key === "reader_close") this.events.push({ type: "reader_close" });
+    else if (key.startsWith("orbit:")) this.events.push({ type: "orbit", id: key.slice(6) });
+    else if (key.startsWith("close:")) { const id = key.slice(6); this.events.push({ type: "close", id }); this.removeCard(id); }
+    else if (key.startsWith("tap:")) this.events.push({ type: "tap", id: key.slice(4) });
+  }
+
+  // -- lector de documentos abierto ------------------------------------------------------------------------------
+  private readerSlot(i: number, slot: Slot, s: HandSample, now: number, dt: number): void {
+    const r = this.reader!;
+    slot.hover = null;
+    const inside = slot.cursor.x >= r.x && slot.cursor.x <= r.x + r.w && slot.cursor.y >= r.y && slot.cursor.y <= r.y + r.h;
+    const closeHit = dist(slot.cursor, { x: r.x + r.w - 34, y: r.y + 34 }) <= 30;
+    if (s.pinching && !slot.pinching) {                      // pellizco: en el boton cierra, dentro arrastra el texto, fuera cierra
+      slot.pinching = true; this.resetDwell(slot);
+      slot.start = { ...slot.cursor }; slot.startT = now; slot.scrollLast = { ...slot.cursor };
+      if (closeHit) { this.events.push({ type: "reader_close" }); slot.scrollLast = null; }
+      return;
+    }
+    if (!s.pinching && slot.pinching) {
+      slot.pinching = false; slot.scrollLast = null;
+      if (!inside && now - slot.startT <= TAP_MAX_S && dist(slot.cursor, slot.start) <= TAP_MAX_MOVE) this.events.push({ type: "reader_close" });
+      return;
+    }
+    if (slot.pinching) {
+      if (slot.scrollLast && inside) { const dy = slot.scrollLast.y - slot.cursor.y; if (dy !== 0) this.events.push({ type: "scroll", dy }); }
+      slot.scrollLast = { ...slot.cursor };
+      return;
+    }
+    if (i >= 2) return; // el raton usa la rueda
+    if (inside && !closeHit) {                               // apuntando a la franja de arriba/abajo: desplaza (sin pellizcar)
+      const rel = (slot.cursor.y - r.y) / r.h;
+      if (rel < SCROLL_BAND) this.events.push({ type: "scroll", dy: -((SCROLL_BAND - rel) / SCROLL_BAND) * SCROLL_SPEED * dt });
+      else if (rel > 1 - SCROLL_BAND) this.events.push({ type: "scroll", dy: ((rel - (1 - SCROLL_BAND)) / SCROLL_BAND) * SCROLL_SPEED * dt });
+    }
+    this.dwellRun(slot, closeHit ? "reader_close" : null, DWELL_S.reader_close, now);
   }
 
   private pinchStart(i: number, slot: Slot, over: ReturnType<Interaction["overUi"]>, card: CardModel | null, now: number): void {
@@ -206,7 +371,7 @@ export class Interaction {
     const b = this.toBoard(slot.cursor);
     slot.grab = card.id;
     slot.off = { x: b.x - card.x, y: b.y - card.y };
-    slot.last = { ...slot.cursor }; slot.lastT = now;
+    slot.last = { ...slot.cursor }; slot.lastT = now; slot.start = { ...slot.cursor }; slot.startT = now;
     card.z = ++this.zc; card.held = i; card.vx = card.vy = 0;
     this.events.push({ type: "grab", id: card.id });
   }
@@ -225,7 +390,7 @@ export class Interaction {
     }
   }
 
-  private release(i: number, now: number): void {
+  private release(i: number, now: number, lost = false): void {
     const slot = this.slots[i];
     const wasZoom = this.zoom !== null && i < 2;
     slot.pinching = false;
@@ -233,6 +398,7 @@ export class Interaction {
       const c = this.cards.get(slot.grab);
       if (c) {
         c.held = null;
+        if (!lost && !wasZoom && now - slot.startT <= TAP_MAX_S && dist(slot.cursor, slot.start) <= TAP_MAX_MOVE) { this.events.push({ type: "tap", id: c.id }); }
         if (wasZoom || now - slot.lastT > 0.15) c.vx = c.vy = 0; // quieto al soltar: sin lanzamiento involuntario
         this.events.push({ type: "drop", id: c.id });
       }

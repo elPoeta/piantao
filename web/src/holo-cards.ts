@@ -4,7 +4,7 @@ export interface CardArt { canvas: HTMLCanvasElement; w: number; h: number }
 
 export const CARD_W = 300;
 const PAD = 16, LINE = 19, HEAD = 46, MAX_H = 420, RES = 2;
-const ORIGIN: Record<string, string> = { model: "Piantao", user: "vos", system: "sistema" };
+const ORIGIN: Record<string, string> = { model: "Piantao", user: "vos", system: "sistema", file: "archivo" };
 
 export function wrapText(measure: (s: string) => number, text: string, maxW: number): string[] {
   const out: string[] = [];
@@ -98,3 +98,30 @@ function scalar(v: unknown): string {
   return String(v);
 }
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+export const TILE_W = 150, TILE_H = 104;
+export type TileKind = "dir" | "image" | "text" | "pdf" | "other" | "up" | "more" | "root";
+
+/** Mosaico del explorador: icono dibujado + nombre (2 lineas). Sin boton de cerrar. */
+export function renderTile(name: string, kind: TileKind): CardArt {
+  const canvas = document.createElement("canvas");
+  canvas.width = TILE_W * RES; canvas.height = TILE_H * RES;
+  const g = canvas.getContext("2d")!;
+  g.scale(RES, RES);
+  const col = kind === "dir" || kind === "root" || kind === "up" || kind === "more" ? "rgba(244,162,97,0.95)" : "rgba(76,201,240,0.95)";
+  roundRect(g, 1, 1, TILE_W - 2, TILE_H - 2, 12);
+  g.fillStyle = "rgba(12,24,38,0.82)"; g.fill(); g.lineWidth = 1.5; g.strokeStyle = col; g.stroke();
+  g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.5; g.lineJoin = "round";
+  const cx = TILE_W / 2, top = 12;
+  if (kind === "dir" || kind === "root") { roundRect(g, cx - 22, top + 8, 44, 30, 4); g.stroke(); g.beginPath(); g.moveTo(cx - 22, top + 8); g.lineTo(cx - 10, top + 2); g.lineTo(cx - 2, top + 8); g.stroke(); }
+  else if (kind === "image") { g.strokeRect(cx - 22, top + 2, 44, 34); g.beginPath(); g.moveTo(cx - 20, top + 34); g.lineTo(cx - 6, top + 16); g.lineTo(cx + 4, top + 28); g.lineTo(cx + 12, top + 20); g.lineTo(cx + 20, top + 34); g.stroke(); g.beginPath(); g.arc(cx + 12, top + 10, 3.5, 0, 7); g.fill(); }
+  else if (kind === "up") { g.beginPath(); g.moveTo(cx - 14, top + 24); g.lineTo(cx, top + 8); g.lineTo(cx + 14, top + 24); g.moveTo(cx, top + 8); g.lineTo(cx, top + 36); g.stroke(); }
+  else if (kind === "more") { for (const d of [-14, 0, 14]) { g.beginPath(); g.arc(cx + d, top + 22, 3.5, 0, 7); g.fill(); } }
+  else { g.strokeRect(cx - 16, top + 1, 32, 38); for (let i = 0; i < 4; i++) { g.beginPath(); g.moveTo(cx - 9, top + 10 + i * 7); g.lineTo(cx + 9, top + 10 + i * 7); g.stroke(); } if (kind === "pdf") { g.font = "700 10px system-ui, sans-serif"; g.textAlign = "center"; g.fillText("PDF", cx, top + 46); g.textAlign = "left"; } }
+  g.fillStyle = "#e6edf5"; g.font = "12px system-ui, sans-serif"; g.textBaseline = "top"; g.textAlign = "center";
+  const m = (t: string) => g.measureText(t).width;
+  const lines = wrapText(m, name, TILE_W - 14).slice(0, 2);
+  if (lines.length === 2 && wrapText(m, name, TILE_W - 14).length > 2) lines[1] = lines[1].replace(/.{0,1}$/, "") + "…";
+  lines.forEach((l, i) => g.fillText(l, TILE_W / 2, 62 + i * 15));
+  return { canvas, w: TILE_W, h: TILE_H };
+}

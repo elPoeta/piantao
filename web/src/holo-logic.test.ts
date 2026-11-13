@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BOARD_SCALE, CARD_SCALE, HandsInput, Interaction, PinchFilter, handMetrics, toScreen, type HandSample, type Lm, type Viewport } from "./holo-logic";
+import { BOARD_SCALE, CARD_SCALE, DWELL_S, HandsInput, Interaction, OneEuro, PinchFilter, handMetrics, toScreen, type HandSample, type Lm, type Viewport } from "./holo-logic";
 
 const vp: Viewport = { vw: 640, vh: 480, cw: 800, ch: 600, mirror: false };
 
@@ -209,5 +209,183 @@ describe("raton", () => {
     step(it, null, null, S(400, 300, false)); step(it, null, null, S(400, 300, true));
     for (let i = 0; i < 20; i++) step(it, null, null, S(300, 300, true));
     expect(c.x).toBeLessThan(350);
+  });
+});
+
+describe("W4.1: agarre permisivo, toques, colocacion y orden", () => {
+  it("pellizco algo fuera del borde todavia agarra (margen)", () => {
+    const it = mk(); card(it);                       // tarjeta 200x100 centrada en (400,300): borde derecho en x=500
+    step(it, S(520, 300, false)); step(it, S(520, 300, true));
+    expect(it.slots[0].grab).toBe("c");
+    const it2 = mk(); card(it2);
+    step(it2, S(620, 300, false)); step(it2, S(620, 300, true));
+    expect(it2.slots[0].grab).toBeNull();
+  });
+  it("el margen elige la tarjeta mas cercana", () => {
+    const it = mk(); card(it, "a", 300, 300); card(it, "b", 540, 300);   // bordes a 400 y 440
+    step(it, S(430, 300, false)); step(it, S(430, 300, true));
+    expect(it.slots[0].grab).toBe("b");
+  });
+  it("toque corto sin moverse = tap; arrastrar o mantener no", () => {
+    const it = mk(); card(it);
+    step(it, S(400, 300, false)); step(it, S(400, 300, true), null, null, 0.016);
+    expect(step(it, S(400, 300, false), null, null, 0.1)).toContainEqual({ type: "tap", id: "c" });
+    const it2 = mk(); card(it2);
+    step(it2, S(400, 300, false)); step(it2, S(400, 300, true));
+    for (let i = 0; i < 8; i++) step(it2, S(400 + i * 20, 300, true));
+    expect(step(it2, S(560, 300, false)).some((e) => e.type === "tap")).toBe(false);
+    const it3 = mk(); card(it3);
+    step(it3, S(400, 300, false)); step(it3, S(400, 300, true));
+    expect(step(it3, S(400, 300, false), null, null, 1.2).some((e) => e.type === "tap")).toBe(false);
+  });
+  it("perder la mano pellizcando no cuenta como toque", () => {
+    const it = mk(); card(it);
+    step(it, S(400, 300, false)); step(it, S(400, 300, true));
+    expect(step(it, null).some((e) => e.type === "tap")).toBe(false);
+  });
+  it("tarjeta no cerrable ignora la esquina de cerrar", () => {
+    const it = mk(); const c = it.addCard("t", 150, 96, { closable: false }); c.x = 400; c.y = 300;
+    const bx = 400 + 75 - 20, by = 300 - 48 + 20;
+    step(it, S(bx, by, false));
+    expect(step(it, S(bx, by, true)).some((e) => e.type === "close")).toBe(false);
+    expect(it.cards.has("t")).toBe(true);
+  });
+  it("30 tarjetas nuevas quedan siempre dentro de la pantalla; las que caben no se solapan", () => {
+    const it = mk();
+    for (let i = 0; i < 30; i++) it.addCard(`k${i}`, 300, 200);
+    for (const c of it.cards.values()) {
+      expect(c.x - c.w / 2).toBeGreaterThanOrEqual(-1); expect(c.x + c.w / 2).toBeLessThanOrEqual(801);
+      expect(c.y - c.h / 2).toBeGreaterThanOrEqual(-1); expect(c.y + c.h / 2).toBeLessThanOrEqual(601);
+    }
+    const first = [...it.cards.values()].slice(0, 2);
+    for (let i = 0; i < first.length; i++) for (let j = i + 1; j < first.length; j++) {
+      const a = first[i], b = first[j];
+      expect(Math.abs(a.x - b.x) >= (a.w + b.w) / 2 || Math.abs(a.y - b.y) >= (a.h + b.h) / 2).toBe(true);
+    }
+  });
+  it("pantalla grande: caben 6 tarjetas 300x200 en 1280x720 sin solaparse", () => {
+    const it = new Interaction(); it.setSize(1280, 720);
+    for (let i = 0; i < 6; i++) it.addCard(`k${i}`, 300, 200);
+    const l = [...it.cards.values()];
+    for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++)
+      expect(Math.abs(l[i].x - l[j].x) >= 300 || Math.abs(l[i].y - l[j].y) >= 200).toBe(true);
+  });
+  it("arrange mete todas en pantalla sin solaparse y restablece la vista", () => {
+    const it = new Interaction(); it.setSize(1280, 720);
+    for (let i = 0; i < 14; i++) { const c = it.addCard(`k${i}`, 300, 220); c.x = 5; c.y = 5; c.scale = 2; }
+    it.board.scale = 2; it.board.tx = -300;
+    it.arrange();
+    expect(it.board.scale).toBe(1); expect(it.board.tx).toBe(0);
+    const l = [...it.cards.values()];
+    for (const c of l) {
+      expect(c.x - (c.w * c.scale) / 2).toBeGreaterThanOrEqual(0); expect(c.x + (c.w * c.scale) / 2).toBeLessThanOrEqual(1280);
+      expect(c.y - (c.h * c.scale) / 2).toBeGreaterThanOrEqual(0); expect(c.y + (c.h * c.scale) / 2).toBeLessThanOrEqual(720 - 70);
+    }
+    for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) {
+      const a = l[i], b = l[j];
+      expect(Math.abs(a.x - b.x) >= (a.w * a.scale + b.w * b.scale) / 2 || Math.abs(a.y - b.y) >= (a.h * a.scale + b.h * b.scale) / 2).toBe(true);
+    }
+  });
+  it("sensibilidad del pellizco", async () => {
+    const m = await import("./holo-logic");
+    const f = new m.PinchFilter();
+    m.setPinchSensitivity(0.3); for (let i = 0; i < 4; i++) f.update(0.38);
+    expect(f.on).toBe(false);
+    m.setPinchSensitivity(0.5); f.reset(); for (let i = 0; i < 4; i++) f.update(0.38);
+    expect(f.on).toBe(true);
+    m.setPinchSensitivity(0.42);
+  });
+});
+
+
+describe("W4.2: apuntar y esperar, lector con scroll, alcance, filtros", () => {
+  const run = (it: Interaction, a: HandSample | null, secs: number, hz = 30) => {
+    const ev: any[] = [];
+    for (let i = 0; i < Math.round(secs * hz); i++) ev.push(...step(it, a, null, null, 1 / hz));
+    return ev;
+  };
+  it("apuntar quieto sobre una tarjeta la 'toca' sin pellizcar, y no repite hasta salir", () => {
+    const it = mk(); card(it);
+    const ev = run(it, S(400, 300, false), DWELL_S.tap + 0.4);
+    expect(ev.filter((e) => e.type === "tap")).toEqual([{ type: "tap", id: "c" }]);
+    expect(run(it, S(402, 301, false), 3).some((e) => e.type === "tap")).toBe(false);
+    run(it, S(40, 560, false), 0.5);                                // se va
+    expect(run(it, S(400, 300, false), DWELL_S.tap + 0.4).some((e) => e.type === "tap")).toBe(true);
+  });
+  it("el progreso sube mientras esta quieto y se reinicia si se mueve mucho o pasa de largo", () => {
+    const it = mk(); card(it);
+    run(it, S(400, 300, false), 0.5); expect(it.slots[0].dwell).toBeGreaterThan(0.3);
+    run(it, S(470, 340, false), 0.1); expect(it.slots[0].dwell).toBeLessThan(0.2);   // se corrio mas que el radio
+    const ev = run(it, S(40, 560, false), 3); expect(ev.length).toBe(0);
+  });
+  it("un temblor chico no pierde el progreso", () => {
+    const it = mk(); card(it);
+    const ev: any[] = [];
+    for (let i = 0; i < 40; i++) ev.push(...step(it, S(400 + (i % 2) * 14, 300 + ((i >> 1) % 2) * 10, false), null, null, 1 / 30));
+    expect(ev.some((e) => e.type === "tap")).toBe(true);
+  });
+  it("orbita, anillo y cruz de cerrar por permanencia", () => {
+    const it = mk(); it.orbits = [{ id: "files", x: 600, y: 120, r: 30 }];
+    expect(run(it, S(600, 120, false), 2)).toContainEqual({ type: "orbit", id: "files" });
+    const it2 = mk();
+    expect(run(it2, S(it2.ring.x, it2.ring.y, false), 2)).toContainEqual({ type: "ring" });
+    const it3 = mk(); card(it3);
+    expect(run(it3, S(480, 270, false), 2)).toContainEqual({ type: "close", id: "c" });
+    expect(it3.cards.size).toBe(0);
+  });
+  it("con el raton no hay permanencia", () => {
+    const it = mk(); card(it);
+    const ev: any[] = [];
+    for (let i = 0; i < 90; i++) ev.push(...step(it, null, null, S(400, 300, false), 1 / 30));
+    expect(ev.length).toBe(0);
+  });
+  it("el pellizco apunta a donde estaba el dedo un instante antes de cerrarse", () => {
+    const it = mk(); card(it, "c", 300, 300);
+    for (let i = 0; i < 10; i++) step(it, S(300, 300, false), null, null, 1 / 30);          // sobre la tarjeta
+    step(it, S(300, 300, false), null, null, 1 / 30);
+    for (let i = 0; i < 2; i++) step(it, S(300 + (i + 1) * 120, 300, false), null, null, 1 / 30); // al cerrar los dedos se corre lejos
+    step(it, S(540, 300, true), null, null, 1 / 30);
+    expect(it.slots[0].grab).toBe("c");
+  });
+  it("lector: arriba/abajo desplaza apuntando; pellizco-arrastre desplaza; cerrar", () => {
+    const it = mk(); it.reader = { x: 100, y: 50, w: 600, h: 500 };
+    const down = run(it, S(400, 540, false), 0.5).filter((e) => e.type === "scroll");
+    expect(down.length).toBeGreaterThan(5); expect(down.every((e) => e.dy > 0)).toBe(true);
+    const up = run(it, S(400, 60, false), 0.5).filter((e) => e.type === "scroll");
+    expect(up.every((e) => e.dy < 0)).toBe(true);
+    expect(run(it, S(400, 300, false), 0.5).some((e) => e.type === "scroll")).toBe(false);   // el centro no desplaza
+    step(it, S(400, 300, false)); step(it, S(400, 300, true));
+    let total = 0;
+    for (let i = 1; i <= 10; i++) for (const e of step(it, S(400, 300 - i * 20, true))) if (e.type === "scroll") total += e.dy;
+    expect(total).toBeGreaterThan(100);
+    step(it, S(400, 300, false));
+    expect(run(it, S(it.reader.x + 566, it.reader.y + 34, false), 1.5)).toContainEqual({ type: "reader_close" });
+  });
+  it("lector: pellizco rapido fuera del panel cierra; las tarjetas de atras no reaccionan", () => {
+    const it = mk(); card(it, "c", 700, 500); it.reader = { x: 100, y: 50, w: 400, h: 300 };
+    step(it, S(700, 500, false));
+    expect(step(it, S(700, 500, true)).some((e) => e.type === "grab")).toBe(false);
+    expect(step(it, S(700, 500, false), null, null, 0.1)).toContainEqual({ type: "reader_close" });
+  });
+  it("alcance ampliado: llegar al borde con menos recorrido, siempre dentro de la pantalla", () => {
+    const base = toScreen({ x: 0.5, y: 0.5 }, { ...vp, amp: 1.4 });
+    expect(base).toEqual({ x: 400, y: 300 });
+    const e = toScreen({ x: 0.9, y: 0.1 }, { ...vp, amp: 1.4 });
+    expect(e.x).toBeLessThanOrEqual(800); expect(e.y).toBeGreaterThanOrEqual(0);
+    expect(toScreen({ x: 0.8, y: 0.5 }, { ...vp, amp: 1.4 }).x).toBeGreaterThan(toScreen({ x: 0.8, y: 0.5 }, vp).x);
+  });
+  it("One Euro: quieta suaviza el temblor; en movimiento sigue sin quedarse atras", () => {
+    const f = new OneEuro(); let t = 0; let out = { x: 0, y: 0 };
+    let jitter = 0;
+    for (let i = 0; i < 60; i++) { t += 1 / 30; out = f.filter({ x: 500 + (i % 2 ? 6 : -6), y: 300 }, t); if (i > 30) jitter = Math.max(jitter, Math.abs(out.x - 500)); }
+    expect(jitter).toBeLessThan(4);
+    for (let i = 0; i < 20; i++) { t += 1 / 30; out = f.filter({ x: 500 + i * 40, y: 300 }, t); }
+    expect(500 + 19 * 40 - out.x).toBeLessThan(150);
+  });
+  it("pellizco: un solo cuadro ruidoso no lo cambia", () => {
+    const f = new PinchFilter();
+    f.update(0.1); expect(f.on).toBe(false); f.update(0.1); expect(f.on).toBe(true);
+    f.update(0.9); expect(f.on).toBe(true); f.update(0.1); f.update(0.9); expect(f.on).toBe(true);
+    f.update(0.9); f.update(0.9); expect(f.on).toBe(false);
   });
 });

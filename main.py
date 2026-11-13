@@ -428,8 +428,12 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
     gw.chat = chat
     gw.voice = None
     gw.board = None
+    gw.files = None
     if chat is not None:
-        from piantao.web import Board, register_board
+        from piantao.web import Board, FileBrowser, register_board
+
+        gw.files = FileBrowser.from_config(cfg, PROJECT_ROOT)
+        gw.handlers.update(gw.files.handlers())
 
         board = Board(PROJECT_ROOT / "media", gw.broadcast, lambda: gw.clients > 0)
         gw.board = board

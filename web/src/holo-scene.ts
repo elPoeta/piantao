@@ -15,6 +15,8 @@ export class HoloScene {
   private ringOuter!: THREE.Mesh; private ringCore!: THREE.Mesh; private ringHalo!: THREE.Mesh;
   private cursors: THREE.Mesh[] = [];
   private link!: THREE.Line;
+  private dwell: THREE.Mesh[] = [];
+  private arcs: THREE.RingGeometry[] = [];
   private orbitMeshes: THREE.Mesh[] = [];
   private disposables: { dispose(): void }[] = [];
 
@@ -37,6 +39,11 @@ export class HoloScene {
     for (let i = 0; i < 3; i++) {
       const m = new THREE.Mesh(new THREE.RingGeometry(0.7, 1, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }));
       m.visible = false; m.position.z = 50; this.scene.add(m); this.cursors.push(m); this.disposables.push(m.geometry, m.material as THREE.Material);
+    }
+    for (let k = 1; k <= 24; k++) { const g = new THREE.RingGeometry(1.25, 1.55, 40, 1, Math.PI / 2, (-2 * Math.PI * k) / 24); this.arcs.push(g); this.disposables.push(g); }
+    for (let i = 0; i < 2; i++) {
+      const m = new THREE.Mesh(this.arcs[0], new THREE.MeshBasicMaterial({ color: 0x5ee6a8, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide }));
+      m.visible = false; m.position.z = 60; this.scene.add(m); this.dwell.push(m); this.disposables.push(m.material as THREE.Material);
     }
     const lg = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
     this.link = new THREE.Line(lg, new THREE.LineBasicMaterial({ color: 0x5ee6a8, transparent: true, opacity: 0.8 }));
@@ -128,6 +135,13 @@ export class HoloScene {
       m.position.set(s.cursor.x, -s.cursor.y, 50);
       m.scale.setScalar(s.pinching ? 10 : 16);
       (m.material as THREE.MeshBasicMaterial).color.setHex(s.pinching ? 0x5ee6a8 : i === 2 ? 0xe6edf5 : 0x4cc9f0);
+    });
+    this.dwell.forEach((m, i) => {
+      const s = it.slots[i];
+      m.visible = s.visible && s.dwell > 0.03;
+      if (!m.visible) return;
+      m.geometry = this.arcs[Math.min(23, Math.floor(s.dwell * 24))];
+      m.position.set(s.cursor.x, -s.cursor.y, 60); m.scale.setScalar(20);
     });
     const a = it.slots[0], b = it.slots[1];
     this.link.visible = !!it.zoom;

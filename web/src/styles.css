@@ -124,3 +124,20 @@ button.ptt { background: var(--ok); color: #04121a; touch-action: none; user-sel
 .holo-bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.7rem; background: linear-gradient(transparent, #04070bf0 40%); }
 .holo-input { flex: 1; min-width: 12rem; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; font: inherit; }
 .holo-err { position: absolute; left: 0.8rem; bottom: 4rem; margin: 0; background: #0b1118d9; padding: 0.2rem 0.6rem; border-radius: 6px; }
+.holo-files { background: #0b1118e6; border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.7rem; max-width: 20rem; max-height: 60vh; overflow: auto; }
+.holo-files ul { list-style: none; margin: 0.3rem 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.holo-files li { overflow-wrap: anywhere; }
+.holo-files p { margin: 0.2rem 0; }
+.holo-sens { display: inline-flex; align-items: center; gap: 0.4rem; background: #0b1118a0; border-radius: 6px; padding: 0 0.5rem; }
+.linklike { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-align: left; }
+.holo-backdrop { position: absolute; inset: 0; z-index: 5; background: #02050a99; display: flex; align-items: center; justify-content: center; }
+.holo-reader { position: relative; width: min(56rem, 90%); height: min(80vh, 46rem); display: flex; flex-direction: column; background: #0b1420f2; border: 1px solid #4cc9f0aa; border-radius: 14px; box-shadow: 0 0 40px #4cc9f033; overflow: hidden; }
+.holo-reader header { display: flex; align-items: center; gap: 0.7rem; padding: 0.8rem 4.6rem 0.8rem 1.1rem; border-bottom: 1px solid var(--line); }
+.holo-reader h2 { margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; flex: 1; }
+.holo-reader-body { flex: 1; overflow: auto; padding: 1rem 1.3rem 2.4rem; outline: none; user-select: text; overscroll-behavior: contain; }
+.holo-reader-body pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font: 0.9rem/1.5 ui-monospace, monospace; }
+.holo-reader-body img { max-width: 100%; height: auto; display: block; margin: 0 auto 1rem; border-radius: 8px; }
+.holo-x { position: absolute; top: 12px; right: 12px; width: 44px; height: 44px; border-radius: 50%; border: 1px solid #ef476f; background: #ef476f33; color: #ef476f; font-size: 1.2rem; cursor: pointer; }
+.holo-edge { position: absolute; left: 0; right: 0; height: 16%; display: flex; justify-content: center; font-size: 0.75rem; color: #4cc9f0; pointer-events: none; opacity: 0.8; }
+.holo-edge.top { top: 3.6rem; align-items: flex-start; background: linear-gradient(#4cc9f022, transparent); }
+.holo-edge.bottom { bottom: 0; align-items: flex-end; background: linear-gradient(transparent, #4cc9f022); }
