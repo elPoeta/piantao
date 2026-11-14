@@ -603,9 +603,42 @@ def open_holo(page, srv):
     page.on("pageerror", lambda e: problems.append(str(e)))
     page.on("console", lambda m: problems.append(m.text) if m.type == "error" else None)
     pair_and_open(page, srv)
+    page.evaluate("location.hash = '#holo-debug'")          # expone el modelo de interaccion (solo lectura en las pruebas)
     page.click("role=tab[name='Holo']")
     page.wait_for_selector("canvas.holo-scene")
+    until(page, "() => !!window.__holo", 5000)
     return problems
+
+
+def card_center(page, cid):
+    return page.evaluate("""(id) => { const h = window.__holo, c = h.cards.get(id); if (!c) return null;
+        const s = h.toScreenFromBoard({x: c.x, y: c.y}); return {x: s.x, y: s.y, w: c.w * c.scale * h.board.scale, h: c.h * c.scale * h.board.scale,
+        rx: c.rx, ry: c.ry, kind: c.kind, rows: c.rows, ch: c.h, cs: c.scale}; }""", cid)
+
+
+def card_ids(page):
+    return page.evaluate("() => [...window.__holo.cards.keys()]")
+
+
+def click(page, x, y):
+    page.mouse.move(x, y); page.wait_for_timeout(60)
+    page.mouse.down(); page.wait_for_timeout(50); page.mouse.up(); page.wait_for_timeout(120)
+
+
+def open_explorer_with_core(page):
+    ring = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y})")
+    click(page, ring["x"], ring["y"])                                   # tocar el nucleo despliega las burbujas
+    until(page, "() => window.__holo.ring.bloom === 1", 4000)
+    o = page.evaluate("() => window.__holo.orbits.find(o => o.id === 'files')")
+    click(page, o["x"], o["y"])
+    until(page, "() => window.__holo.cards.has('files-list')", 4000)
+
+
+def click_row(page, rid_index):
+    c = card_center(page, "files-list")
+    row = c["rows"][rid_index]
+    y = c["y"] - c["h"] / 2 + (row["y0"] + row["y1"]) / 2 * c["cs"]
+    click(page, c["x"] - 40, y)
 
 
 def test_holo_shows_cards_from_the_agent_draws_them_and_closing_reaches_the_server(browser, tmp_path):
@@ -615,61 +648,122 @@ def test_holo_shows_cards_from_the_agent_draws_them_and_closing_reaches_the_serv
     with BoardServer(tmp_path, script) as srv:
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         problems = open_holo(page, srv)
-        assert page.locator(".holo-list summary").inner_text() == "Tarjetas (0)"
+        assert page.locator(".holo-list summary").first.inner_text() == "Tarjetas (0)"
         srv.add(title="Resumen <b>x</b>", text="Hola mundo " * 8, image="foto.png")
         page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
-        page.wait_for_timeout(400)
-        assert _bright(page.screenshot(), 60, 230, 360, 420) > 500  # la tarjeta se dibujo en el canvas WebGL
-        page.click(".holo-list summary")
-        assert "Resumen <b>x</b>" in page.inner_text(".holo-list li")  # texto plano
+        page.wait_for_timeout(500)
+        c = card_center(page, [i for i in card_ids(page)][0])
+        shot = page.screenshot()
+        assert _bright(shot, int(c["x"] - c["w"] / 2), int(c["y"] - c["h"] / 2), int(c["x"] + c["w"] / 2), int(c["y"] + c["h"] / 2)) > 500
+        # el esqueleto de la mano no existe en el DOM y no se dibuja nada fuera de la escena
+        assert page.locator("canvas.holo-skel").count() == 0
+        page.click(".holo-list summary >> nth=0")
+        assert "Resumen <b>x</b>" in page.inner_text(".holo-list li")
         assert page.evaluate("window.__pwned") is None
-        page.click(".holo-list li button")
+        page.click(".holo-list li button:text-is('Cerrar')")
         page.wait_for_selector(".holo-list summary:has-text('Tarjetas (0)')")
         for _ in range(50):
             if not srv.board.cards:
                 break
             page.wait_for_timeout(100)
         assert srv.board.cards == {}
-        page.wait_for_timeout(300)
-        assert _bright(page.screenshot(), 60, 230, 360, 420) < 200
         assert problems == [], problems
 
 
-def test_holo_mouse_drags_a_card_and_orbit_opens_a_system_card(browser, tmp_path):
+def test_holo_mouse_drags_a_card_clicking_opens_a_window_that_scrolls_tilts_and_closes(browser, tmp_path):
     async def script(srv, text):
         yield srv.AgentEvent("text", text="x")
 
     with BoardServer(tmp_path, script) as srv:
         page = browser.new_page(viewport={"width": 1280, "height": 720})
         problems = open_holo(page, srv)
-        srv.add(title="Arrastrame", text="contenido")
+        srv.add(title="Informe", text="parrafo " * 300)
         page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
-        page.wait_for_timeout(400)
-        before = page.screenshot()
-        assert _bright(before, 60, 230, 360, 340) > 300
-        page.mouse.move(200, 300); page.mouse.down()
+        page.wait_for_timeout(500)
+        cid = card_ids(page)[0]
+        c = card_center(page, cid)
+        # arrastrar con el raton
+        page.mouse.move(c["x"] - 60, c["y"]); page.mouse.down()
         for i in range(1, 21):
-            page.mouse.move(200 + i * 30, 300 + i * 5)
-            page.wait_for_timeout(16)
-        page.mouse.up()
-        page.wait_for_timeout(600)
+            page.mouse.move(c["x"] - 60 + i * 25, c["y"] + i * 4); page.wait_for_timeout(16)
+        page.mouse.up(); page.wait_for_timeout(500)
+        c2 = card_center(page, cid)
+        assert c2["x"] > c["x"] + 350
+        # un clic abre una VENTANA en la escena (no un panel HTML) con el texto completo disponible
+        click(page, c2["x"] - 60, c2["y"])
+        wid = f"win-{cid}"
+        until(page, f"() => window.__holo.cards.has('{wid}')", 4000)
+        assert page.locator(".holo-reader").count() == 0
+        w = card_center(page, wid)
+        assert w["kind"] == "window" and w["w"] > 300
+        # la rueda desplaza el documento: la textura cambia
+        page.wait_for_timeout(300)
+        box = (int(w["x"] - w["w"] / 2) + 10, int(w["y"] - w["h"] / 2) + 80, int(w["x"] + w["w"] / 2) - 10, int(w["y"] + w["h"] / 2) - 20)
+        before = page.screenshot()
+        page.mouse.move(w["x"], w["y"]); page.mouse.wheel(0, 500); page.wait_for_timeout(500)
         after = page.screenshot()
-        assert _bright(after, 60, 230, 360, 340) < 120          # ya no esta en su lugar
-        assert _bright(after, 700, 300, 1000, 460) > 300        # esta donde la soltamos
-        # orbita "Archivos": a la derecha del anillo (centro 640, y 110) -> 752; los mosaicos aparecen y un toque abre un archivo
-        page.mouse.move(752, 110); page.wait_for_timeout(80); page.mouse.down(); page.wait_for_timeout(50); page.mouse.up()
-        page.wait_for_selector("nav.holo-files")
-        assert "docs" in page.inner_text("nav.holo-files") and "foto.png" in page.inner_text("nav.holo-files")
+        assert before != after and _bright(after, *box) > 200
+        # Shift+arrastrar la inclina en 3D
+        page.keyboard.down("Shift")
+        page.mouse.move(w["x"], w["y"] + 100); page.mouse.down()
+        for i in range(1, 16):
+            page.mouse.move(w["x"] + i * 12, w["y"] + 100 + i * 3); page.wait_for_timeout(16)
+        page.mouse.up(); page.keyboard.up("Shift"); page.wait_for_timeout(200)
+        assert abs(card_center(page, wid)["ry"]) > 0.3
+        # tocar la barra de titulo cierra la ventana
+        w = card_center(page, wid)
+        click(page, w["x"] - 100, w["y"] - w["h"] / 2 + 20 * w["cs"])
+        until(page, f"() => !window.__holo.cards.has('{wid}')", 4000)
+        assert problems == [], problems
+
+
+def test_holo_core_unfolds_bubbles_and_moves_and_the_explorer_is_one_list_card(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with BoardServer(tmp_path, script) as srv:
+        (tmp_path / "workspace" / "largo.txt").write_text("\n".join(f"linea {i} del documento largo" for i in range(300)), encoding="utf-8")
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = open_holo(page, srv)
+        ring0 = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y, open: window.__holo.ring.open})")
+        assert ring0["open"] is False
+        # arrastrar el nucleo lo mueve (y no lo abre)
+        page.mouse.move(ring0["x"], ring0["y"]); page.mouse.down()
+        for i in range(1, 16):
+            page.mouse.move(ring0["x"] + i * 10, ring0["y"] + i * 12); page.wait_for_timeout(16)
+        page.mouse.up(); page.wait_for_timeout(200)
+        ring1 = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y, open: window.__holo.ring.open})")
+        assert ring1["x"] > ring0["x"] + 100 and ring1["y"] > ring0["y"] + 120 and ring1["open"] is False
+        open_explorer_with_core(page)
+        lst = card_center(page, "files-list")
+        assert lst["kind"] == "list" and len(lst["rows"]) >= 2
         page.wait_for_timeout(400)
-        assert _bright(page.screenshot(), 16, 170, 400, 330) > 400  # mosaicos dibujados en el canvas
-        page.click("nav.holo-files >> text=notas.txt")
-        page.wait_for_selector(".holo-reader")
-        page.keyboard.press("Escape")
-        page.wait_for_selector(".holo-reader", state="detached")
-        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (2)')")
-        page.click(".holo-list summary")
-        assert "notas.txt" in page.inner_text(".holo-list")
-        assert len(srv.board.cards) == 1    # las tarjetas de archivo son locales: no se guardan en el servidor
+        assert _bright(page.screenshot(), int(lst["x"] - lst["w"] / 2), int(lst["y"] - lst["h"] / 2), int(lst["x"] + lst["w"] / 2), int(lst["y"] + lst["h"] / 2)) > 800
+        n_before = len(card_ids(page))
+        names = page.evaluate("() => window.__holo.cards.get('files-list').rows.map(r => r.id)")
+        assert names[0].startswith("e") or names[0] == "up"
+        # entrar a docs/ (primera fila: carpetas primero) cambia el CONTENIDO de la misma tarjeta
+        click_row(page, 0)
+        until(page, "() => window.__holo.cards.get('files-list').rows.some(r => r.id === 'up')", 4000)
+        assert len(card_ids(page)) == n_before
+        # abrir un archivo desde la lista abre una ventana
+        click_row(page, 1)
+        until(page, "() => [...window.__holo.cards.keys()].some(k => k.startsWith('win-file-'))", 4000)
+        wid = [k for k in card_ids(page) if k.startswith("win-file-")][0]
+        assert "informe.md" in wid
+        # plegar las burbujas (tocar el nucleo) y cerrar la lista con su cruz
+        ring = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y})")
+        click(page, ring["x"], ring["y"])
+        until(page, "() => window.__holo.ring.bloom === 0", 4000)
+        # apartar el nucleo (arrastrandolo) para que no tape la cruz de la lista
+        ring = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y})")
+        page.mouse.move(ring["x"], ring["y"]); page.mouse.down()
+        for i in range(1, 21):
+            page.mouse.move(ring["x"] + i * 40, ring["y"] + i * 14); page.wait_for_timeout(16)
+        page.mouse.up(); page.wait_for_timeout(200)
+        c = card_center(page, "files-list")
+        click(page, c["x"] + c["w"] / 2 - 20 * c["cs"], c["y"] - c["h"] / 2 + 20 * c["cs"])
+        until(page, "() => !window.__holo.cards.has('files-list')", 4000)
         assert problems == [], problems
 
 
@@ -693,7 +787,7 @@ def test_chat_answer_can_be_pinned_as_a_card(browser, tmp_path):
         page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
 
 
-def test_holo_file_browser_navigates_opens_images_and_blocks_escape(browser, tmp_path):
+def test_holo_text_explorer_is_an_accessible_alternative_and_images_load(browser, tmp_path):
     async def script(srv, text):
         yield srv.AgentEvent("text", text="x")
 
@@ -702,67 +796,21 @@ def test_holo_file_browser_navigates_opens_images_and_blocks_escape(browser, tmp
         problems = open_holo(page, srv)
         failed = []
         page.on("response", lambda r: failed.append(r.url) if "/api/file" in r.url and r.status != 200 else None)
-        page.click("text=Archivos >> nth=0")
-        page.wait_for_selector("nav.holo-files")
+        page.click("summary:text-is('Explorador (texto)')")
+        page.click("text=Abrir explorador")
+        page.wait_for_selector("nav.holo-files >> text=docs")
         page.click("nav.holo-files >> text=docs")
         page.wait_for_selector("nav.holo-files >> text=informe.md")
         page.click("nav.holo-files >> text=informe.md")
-        page.wait_for_selector(".holo-reader")
-        page.keyboard.press("Escape")
-        page.wait_for_selector(".holo-reader", state="detached")
-        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
+        until(page, "() => [...window.__holo.cards.keys()].some(k => k.includes('informe.md'))", 4000)
         page.click("nav.holo-files >> text=Subir")
-        page.wait_for_selector("nav.holo-files >> text=foto.png")
         page.click("nav.holo-files >> text=foto.png")
-        page.wait_for_selector(".holo-reader")
-        page.keyboard.press("Escape")
-        page.wait_for_selector(".holo-reader", state="detached")
-        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (2)')")
+        until(page, "() => [...window.__holo.cards.keys()].some(k => k.includes('foto.png'))", 4000)
         page.wait_for_timeout(500)
         assert failed == []
         assert page.evaluate("window.__pwned") is None
-        # cerrar el explorador quita la lista
-        page.click("button:text-is('Archivos')")
-        page.wait_for_selector("nav.holo-files", state="detached")
+        page.click(".holo-list summary >> nth=0")
+        assert "Ventanas abiertas" in page.inner_text(".holo-list >> nth=0")
         assert problems == [], problems
-        # el servidor no deja salir de la carpeta
         res = page.evaluate("""async () => { const r = await fetch('/api/file?root=0&path=../x.png'); return r.status; }""")
         assert res == 404
-
-
-def test_holo_reader_opens_on_click_scrolls_and_closes(browser, tmp_path):
-    async def script(srv, text):
-        yield srv.AgentEvent("text", text="x")
-
-    with BoardServer(tmp_path, script) as srv:
-        long = "\n".join(f"linea {i} del documento largo" for i in range(300))
-        (tmp_path / "workspace" / "largo.txt").write_text(long, encoding="utf-8")
-        page = browser.new_page(viewport={"width": 1280, "height": 720})
-        problems = open_holo(page, srv)
-        page.click("text=Archivos >> nth=0")
-        page.click("nav.holo-files >> text=largo.txt")
-        page.wait_for_selector(".holo-reader")
-        top0 = page.evaluate("document.querySelector('.holo-reader-body').scrollTop")
-        page.mouse.move(640, 400)
-        page.mouse.wheel(0, 600)
-        page.wait_for_timeout(300)
-        assert page.evaluate("document.querySelector('.holo-reader-body').scrollTop") > top0 + 200
-        assert page.evaluate("document.querySelector('.holo-reader-body').scrollHeight") > 3000
-        page.keyboard.press("Escape")
-        page.wait_for_selector(".holo-reader", state="detached")
-        # cerrar el explorador y su tarjeta; clic en una tarjeta del agente la abre en el lector con el texto COMPLETO
-        page.click("button:text-is('Archivos')")
-        page.click(".holo-list summary")
-        page.click(".holo-list li button")
-        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (0)')")
-        srv.add(title="Informe", text="parrafo " * 300)
-        page.wait_for_selector(".holo-list summary:has-text('Tarjetas (1)')")
-        page.wait_for_timeout(500)
-        page.mouse.move(166, 380); page.wait_for_timeout(120)
-        page.mouse.down(); page.wait_for_timeout(60); page.mouse.up()
-        page.wait_for_selector(".holo-reader")
-        assert page.text_content(".holo-reader h2") == "Informe"
-        assert page.inner_text(".holo-reader-body").count("parrafo") == 300
-        page.click(".holo-x")
-        page.wait_for_selector(".holo-reader", state="detached")
-        assert problems == [], problems

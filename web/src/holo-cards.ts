@@ -99,29 +99,57 @@ function scalar(v: unknown): string {
 }
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-export const TILE_W = 150, TILE_H = 104;
-export type TileKind = "dir" | "image" | "text" | "pdf" | "other" | "up" | "more" | "root";
+export type IconKind = "dir" | "image" | "text" | "pdf" | "other" | "up" | "more" | "root";
 
-/** Mosaico del explorador: icono dibujado + nombre (2 lineas). Sin boton de cerrar. */
-export function renderTile(name: string, kind: TileKind): CardArt {
+/** Icono de 24x24 px dibujado con trazos (sin fuentes de emojis) con su esquina superior izquierda en (x, y). */
+export function drawIcon(g: CanvasRenderingContext2D, kind: IconKind, x: number, y: number, color: string): void {
+  g.save(); g.translate(x, y); g.strokeStyle = color; g.fillStyle = color; g.lineWidth = 2; g.lineJoin = "round"; g.lineCap = "round";
+  if (kind === "dir" || kind === "root") { roundRect(g, 1, 6, 22, 15, 3); g.stroke(); g.beginPath(); g.moveTo(1, 6); g.lineTo(8, 2); g.lineTo(12, 6); g.stroke(); }
+  else if (kind === "image") { g.strokeRect(2, 4, 20, 16); g.beginPath(); g.moveTo(3, 19); g.lineTo(9, 11); g.lineTo(14, 16); g.lineTo(17, 12); g.lineTo(21, 19); g.stroke(); g.beginPath(); g.arc(16, 8, 1.8, 0, 7); g.fill(); }
+  else if (kind === "up") { g.beginPath(); g.moveTo(5, 14); g.lineTo(12, 6); g.lineTo(19, 14); g.moveTo(12, 6); g.lineTo(12, 20); g.stroke(); }
+  else if (kind === "more") { for (const d of [5, 12, 19]) { g.beginPath(); g.arc(d, 12, 2, 0, 7); g.fill(); } }
+  else { g.strokeRect(4, 2, 16, 20); for (let i = 0; i < 3; i++) { g.beginPath(); g.moveTo(8, 8 + i * 5); g.lineTo(16, 8 + i * 5); g.stroke(); } }
+  g.restore();
+}
+
+export interface ListRowSpec { id: string; label: string; kind: IconKind; hint?: string }
+export interface ListArt extends CardArt { rows: { id: string; y0: number; y1: number }[] }
+export const LIST_W = 340, ROW_H = 42, LIST_HEAD = 50;
+
+/** Tarjeta-lista (explorador): filas de 42 px, comodas para tocar con la mano. */
+export function renderList(title: string, subtitle: string, rows: ListRowSpec[]): ListArt {
+  const h = LIST_HEAD + Math.max(1, rows.length) * ROW_H + 10;
   const canvas = document.createElement("canvas");
-  canvas.width = TILE_W * RES; canvas.height = TILE_H * RES;
+  canvas.width = LIST_W * RES; canvas.height = h * RES;
   const g = canvas.getContext("2d")!;
   g.scale(RES, RES);
-  const col = kind === "dir" || kind === "root" || kind === "up" || kind === "more" ? "rgba(244,162,97,0.95)" : "rgba(76,201,240,0.95)";
-  roundRect(g, 1, 1, TILE_W - 2, TILE_H - 2, 12);
-  g.fillStyle = "rgba(12,24,38,0.82)"; g.fill(); g.lineWidth = 1.5; g.strokeStyle = col; g.stroke();
-  g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.5; g.lineJoin = "round";
-  const cx = TILE_W / 2, top = 12;
-  if (kind === "dir" || kind === "root") { roundRect(g, cx - 22, top + 8, 44, 30, 4); g.stroke(); g.beginPath(); g.moveTo(cx - 22, top + 8); g.lineTo(cx - 10, top + 2); g.lineTo(cx - 2, top + 8); g.stroke(); }
-  else if (kind === "image") { g.strokeRect(cx - 22, top + 2, 44, 34); g.beginPath(); g.moveTo(cx - 20, top + 34); g.lineTo(cx - 6, top + 16); g.lineTo(cx + 4, top + 28); g.lineTo(cx + 12, top + 20); g.lineTo(cx + 20, top + 34); g.stroke(); g.beginPath(); g.arc(cx + 12, top + 10, 3.5, 0, 7); g.fill(); }
-  else if (kind === "up") { g.beginPath(); g.moveTo(cx - 14, top + 24); g.lineTo(cx, top + 8); g.lineTo(cx + 14, top + 24); g.moveTo(cx, top + 8); g.lineTo(cx, top + 36); g.stroke(); }
-  else if (kind === "more") { for (const d of [-14, 0, 14]) { g.beginPath(); g.arc(cx + d, top + 22, 3.5, 0, 7); g.fill(); } }
-  else { g.strokeRect(cx - 16, top + 1, 32, 38); for (let i = 0; i < 4; i++) { g.beginPath(); g.moveTo(cx - 9, top + 10 + i * 7); g.lineTo(cx + 9, top + 10 + i * 7); g.stroke(); } if (kind === "pdf") { g.font = "700 10px system-ui, sans-serif"; g.textAlign = "center"; g.fillText("PDF", cx, top + 46); g.textAlign = "left"; } }
-  g.fillStyle = "#e6edf5"; g.font = "12px system-ui, sans-serif"; g.textBaseline = "top"; g.textAlign = "center";
-  const m = (t: string) => g.measureText(t).width;
-  const lines = wrapText(m, name, TILE_W - 14).slice(0, 2);
-  if (lines.length === 2 && wrapText(m, name, TILE_W - 14).length > 2) lines[1] = lines[1].replace(/.{0,1}$/, "") + "…";
-  lines.forEach((l, i) => g.fillText(l, TILE_W / 2, 62 + i * 15));
-  return { canvas, w: TILE_W, h: TILE_H };
+  roundRect(g, 1, 1, LIST_W - 2, h - 2, 14);
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(244,162,97,0.20)"); grad.addColorStop(1, "rgba(12,24,38,0.82)");
+  g.fillStyle = grad; g.fill(); g.lineWidth = 1.5; g.strokeStyle = "rgba(244,162,97,0.9)"; g.stroke();
+  g.textBaseline = "middle";
+  g.fillStyle = "#e6edf5"; g.font = "600 16px system-ui, sans-serif";
+  let t = title;
+  while (t.length > 1 && g.measureText(t).width > LIST_W - 80) t = t.slice(0, -1);
+  g.fillText(t === title ? t : t + "…", 16, 20);
+  g.fillStyle = "#8a9bb0"; g.font = "11px system-ui, sans-serif"; g.fillText(subtitle, 16, 38);
+  g.beginPath(); g.arc(LIST_W - 20, 20, 14, 0, Math.PI * 2); g.fillStyle = "rgba(239,71,111,0.25)"; g.fill();
+  g.strokeStyle = "#ef476f"; g.lineWidth = 2; g.beginPath(); g.moveTo(LIST_W - 25, 15); g.lineTo(LIST_W - 15, 25); g.moveTo(LIST_W - 15, 15); g.lineTo(LIST_W - 25, 25); g.stroke();
+  const out: ListArt["rows"] = [];
+  rows.forEach((r, i) => {
+    const y0 = LIST_HEAD + i * ROW_H;
+    out.push({ id: r.id, y0, y1: y0 + ROW_H });
+    roundRect(g, 8, y0 + 3, LIST_W - 16, ROW_H - 6, 8);
+    g.fillStyle = i % 2 ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.07)"; g.fill();
+    const accent = r.kind === "dir" || r.kind === "root" || r.kind === "up" || r.kind === "more" ? "#f4a261" : "#4cc9f0";
+    drawIcon(g, r.kind, 16, y0 + 9, accent);
+    g.fillStyle = "#e6edf5"; g.font = "14px system-ui, sans-serif"; g.textAlign = "left";
+    let label = r.label;
+    const room = LIST_W - 56 - (r.hint ? 62 : 16);
+    while (label.length > 1 && g.measureText(label).width > room) label = label.slice(0, -1);
+    g.fillText(label === r.label ? label : label + "…", 48, y0 + ROW_H / 2);
+    if (r.hint) { g.fillStyle = "#8a9bb0"; g.font = "11px system-ui, sans-serif"; g.textAlign = "right"; g.fillText(r.hint, LIST_W - 16, y0 + ROW_H / 2); g.textAlign = "left"; }
+  });
+  if (rows.length === 0) { g.fillStyle = "#8a9bb0"; g.font = "13px system-ui, sans-serif"; g.fillText("(vacío)", 20, LIST_HEAD + ROW_H / 2); }
+  return { canvas, w: LIST_W, h, rows: out };
 }

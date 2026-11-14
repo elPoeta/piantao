@@ -48,6 +48,7 @@ export class VisionClient {
   private lastTs = -1;
   private connections: { start: number; end: number }[] = [];
   /** La escena holografica se suscribe aqui para recibir las manos (hasta 2) y decide si es dueña de ellas (pellizco en curso). */
+  private lastDetect = 0;
   hands: ((hands: { x: number; y: number }[][], aspect: number) => void) | null = null;
   owner: (() => boolean) | null = null;
   state: VisionState = "off";
@@ -90,10 +91,13 @@ export class VisionClient {
     const { FilesetResolver, HandLandmarker } = await import("@mediapipe/tasks-vision");
     try {
       const fileset = await FilesetResolver.forVisionTasks("/mediapipe");
-      this.landmarker = await HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: "/vision/hand_landmarker.task", delegate: "CPU" }, // CPU: la GPU se la queda el modelo de lenguaje
-        runningMode: "VIDEO", numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+      // GPU primero (mucho mas fluido: el seguimiento de manos pesa poco); si el navegador no la ofrece, CPU.
+      // Deteccion exigente (0.7) para no inventar manos en fondos complicados; el seguimiento ya iniciado es mas laxo (0.5).
+      const make = (delegate: "GPU" | "CPU") => HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: "/vision/hand_landmarker.task", delegate },
+        runningMode: "VIDEO", numHands: 2, minHandDetectionConfidence: 0.7, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
       });
+      try { this.landmarker = await make("GPU"); } catch { this.landmarker = await make("CPU"); }
     } catch (e) {
       throw new Error(`No se pudo cargar el modelo de manos (¿corriste «python scripts/fetch_models.py»?): ${(e as Error).message}`);
     }
@@ -106,8 +110,9 @@ export class VisionClient {
     const v = this.video, lm = this.landmarker;
     if (!v || !lm || v.readyState < 2 || v.videoWidth === 0) return;
     const now = performance.now();
-    if (now - this.lastSent < 1000 / HAND_FPS) return;
+    if (now - this.lastDetect < 1000 / HAND_FPS) return;
     if (v.currentTime === this.lastTs) return; // cuadro repetido
+    this.lastDetect = now;
     this.lastTs = v.currentTime;
     let res;
     try { res = lm.detectForVideo(v, now); } catch { return; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BOARD_SCALE, CARD_SCALE, DWELL_S, HandsInput, Interaction, OneEuro, PinchFilter, handMetrics, toScreen, type HandSample, type Lm, type Viewport } from "./holo-logic";
+import { HOLD_S, TILT, BOARD_SCALE, CARD_SCALE, DWELL_S, HandsInput, Interaction, OneEuro, PinchFilter, handMetrics, toScreen, type HandSample, type Lm, type Viewport } from "./holo-logic";
 
 const vp: Viewport = { vw: 640, vh: 480, cw: 800, ch: 600, mirror: false };
 
@@ -107,20 +107,41 @@ describe("agarrar y arrastrar", () => {
     step(it, S(400, 300, false), null, null, 0.3);
     expect(c.vx).toBe(0);
   });
-  it("boton cerrar emite close y quita la tarjeta", () => {
+  it("tocar la cruz de cerrar emite close y quita la tarjeta", () => {
     const it = mk(); card(it);
     const bx = 400 + 100 - 20, by = 300 - 50 + 20;
     step(it, S(bx, by, false));
-    const ev = step(it, S(bx, by, true));
-    expect(ev).toContainEqual({ type: "close", id: "c" });
+    step(it, S(bx, by, true));
+    expect(step(it, S(bx, by, false), null, null, 0.1)).toContainEqual({ type: "close", id: "c" });
     expect(it.cards.size).toBe(0);
   });
-  it("anillo y orbitas", () => {
-    const it = mk(); it.orbits = [{ id: "audit", x: 600, y: 120, r: 30 }];
-    step(it, S(it.ring.x, it.ring.y, false));
-    expect(step(it, S(it.ring.x, it.ring.y, true))).toContainEqual({ type: "ring" });
-    for (let i = 0; i < 12; i++) step(it, S(600, 120, false));
-    expect(step(it, S(600, 120, true))).toContainEqual({ type: "orbit", id: "audit" });
+  it("el nucleo: un toque emite ring; arrastrarlo lo mueve sin emitir", () => {
+    const it = mk();
+    step(it, S(it.ring.x, it.ring.y, false)); step(it, S(it.ring.x, it.ring.y, true));
+    expect(step(it, S(it.ring.x, it.ring.y, false), null, null, 0.1)).toContainEqual({ type: "ring" });
+    const it2 = mk(); const x0 = it2.ring.x, y0 = it2.ring.y;
+    step(it2, S(x0, y0, false)); step(it2, S(x0, y0, true));
+    let ev: any[] = [];
+    for (let i = 1; i <= 25; i++) ev.push(...step(it2, S(x0 + i * 8, y0 + i * 12, true)));
+    ev.push(...step(it2, S(x0 + 200, y0 + 300, false)));
+    expect(ev.some((e) => e.type === "ring")).toBe(false);
+    expect(it2.ring.x).toBeGreaterThan(x0 + 120); expect(it2.ring.y).toBeGreaterThan(y0 + 150);
+    it2.setSize(800, 600); expect(it2.ring.x).toBeGreaterThan(x0 + 120);        // reajustar el tamaño no lo devuelve al centro
+  });
+  it("burbujas: aparecen al abrir el nucleo, se tocan, y cerradas no reaccionan", () => {
+    const it = mk(); it.setOrbits(["files", "mic", "arrange", "clear"]);
+    step(it, null);
+    expect(it.orbits.every((o) => o.r === 0)).toBe(true);
+    const o0 = it.orbits[0];
+    step(it, S(o0.x, o0.y, false)); expect(step(it, S(o0.x, o0.y, true)).some((e) => e.type === "orbit")).toBe(false);
+    it.setOpen(true);
+    for (let i = 0; i < 80; i++) step(it, null, null, null, 0.016);
+    expect(it.ring.bloom).toBe(1);
+    expect(it.orbits.every((o) => o.r > 30)).toBe(true);
+    for (const o of it.orbits) { expect(o.x).toBeGreaterThan(0); expect(o.x).toBeLessThan(800); expect(o.y).toBeGreaterThan(0); expect(o.y).toBeLessThan(600); }
+    const t = it.orbits[1];
+    for (let i = 0; i < 12; i++) step(it, S(t.x, t.y, false));
+    expect(step(it, S(t.x, t.y, true))).toContainEqual({ type: "orbit", id: "mic" });
   });
   it("tarjeta superior gana", () => {
     const it = mk(); card(it, "a"); const b = card(it, "b");
@@ -324,9 +345,11 @@ describe("W4.2: apuntar y esperar, lector con scroll, alcance, filtros", () => {
     for (let i = 0; i < 40; i++) ev.push(...step(it, S(400 + (i % 2) * 14, 300 + ((i >> 1) % 2) * 10, false), null, null, 1 / 30));
     expect(ev.some((e) => e.type === "tap")).toBe(true);
   });
-  it("orbita, anillo y cruz de cerrar por permanencia", () => {
-    const it = mk(); it.orbits = [{ id: "files", x: 600, y: 120, r: 30 }];
-    expect(run(it, S(600, 120, false), 2)).toContainEqual({ type: "orbit", id: "files" });
+  it("nucleo, burbuja y cruz de cerrar por permanencia", () => {
+    const it = mk(); it.setOrbits(["files"]); it.setOpen(true);
+    for (let i = 0; i < 60; i++) step(it, null);
+    const o = it.orbits[0];
+    expect(run(it, S(o.x, o.y, false), 2)).toContainEqual({ type: "orbit", id: "files" });
     const it2 = mk();
     expect(run(it2, S(it2.ring.x, it2.ring.y, false), 2)).toContainEqual({ type: "ring" });
     const it3 = mk(); card(it3);
@@ -346,26 +369,6 @@ describe("W4.2: apuntar y esperar, lector con scroll, alcance, filtros", () => {
     for (let i = 0; i < 2; i++) step(it, S(300 + (i + 1) * 120, 300, false), null, null, 1 / 30); // al cerrar los dedos se corre lejos
     step(it, S(540, 300, true), null, null, 1 / 30);
     expect(it.slots[0].grab).toBe("c");
-  });
-  it("lector: arriba/abajo desplaza apuntando; pellizco-arrastre desplaza; cerrar", () => {
-    const it = mk(); it.reader = { x: 100, y: 50, w: 600, h: 500 };
-    const down = run(it, S(400, 540, false), 0.5).filter((e) => e.type === "scroll");
-    expect(down.length).toBeGreaterThan(5); expect(down.every((e) => e.dy > 0)).toBe(true);
-    const up = run(it, S(400, 60, false), 0.5).filter((e) => e.type === "scroll");
-    expect(up.every((e) => e.dy < 0)).toBe(true);
-    expect(run(it, S(400, 300, false), 0.5).some((e) => e.type === "scroll")).toBe(false);   // el centro no desplaza
-    step(it, S(400, 300, false)); step(it, S(400, 300, true));
-    let total = 0;
-    for (let i = 1; i <= 10; i++) for (const e of step(it, S(400, 300 - i * 20, true))) if (e.type === "scroll") total += e.dy;
-    expect(total).toBeGreaterThan(100);
-    step(it, S(400, 300, false));
-    expect(run(it, S(it.reader.x + 566, it.reader.y + 34, false), 1.5)).toContainEqual({ type: "reader_close" });
-  });
-  it("lector: pellizco rapido fuera del panel cierra; las tarjetas de atras no reaccionan", () => {
-    const it = mk(); card(it, "c", 700, 500); it.reader = { x: 100, y: 50, w: 400, h: 300 };
-    step(it, S(700, 500, false));
-    expect(step(it, S(700, 500, true)).some((e) => e.type === "grab")).toBe(false);
-    expect(step(it, S(700, 500, false), null, null, 0.1)).toContainEqual({ type: "reader_close" });
   });
   it("alcance ampliado: llegar al borde con menos recorrido, siempre dentro de la pantalla", () => {
     const base = toScreen({ x: 0.5, y: 0.5 }, { ...vp, amp: 1.4 });
@@ -387,5 +390,135 @@ describe("W4.2: apuntar y esperar, lector con scroll, alcance, filtros", () => {
     f.update(0.1); expect(f.on).toBe(false); f.update(0.1); expect(f.on).toBe(true);
     f.update(0.9); expect(f.on).toBe(true); f.update(0.1); f.update(0.9); expect(f.on).toBe(true);
     f.update(0.9); f.update(0.9); expect(f.on).toBe(false);
+  });
+});
+
+
+describe("W4.3: ventanas 3D, listas, giro, descarte", () => {
+  const win = (it: Interaction, id = "w") => it.addCard(id, 560, 680, { kind: "window", titleH: 48 });
+  const run = (it: Interaction, a: HandSample | null, secs: number, hz = 30) => {
+    const ev: any[] = [];
+    for (let i = 0; i < Math.round(secs * hz); i++) ev.push(...step(it, a, null, null, 1 / hz));
+    return ev;
+  };
+  const bigIt = () => { const it = new Interaction(); it.setSize(1280, 720); return it; };
+
+  it("una ventana nueva se abre centrada y ajustada para entrar entera", () => {
+    const it = bigIt(); const w = win(it);
+    expect(w.scale).toBeLessThan(1);
+    const sx = (w.h * w.scale) / 2;
+    expect(w.y - sx).toBeGreaterThanOrEqual(0); expect(w.y + sx).toBeLessThanOrEqual(720);
+    expect(Math.abs(w.x - 640)).toBeLessThan(5);
+  });
+  it("tocar la barra de titulo cierra la ventana (tambien por permanencia)", () => {
+    const it = bigIt(); const w = win(it);
+    const p = { x: w.x, y: w.y - (w.h * w.scale) / 2 + 20 };
+    step(it, S(p.x, p.y, false)); step(it, S(p.x, p.y, true));
+    expect(step(it, S(p.x, p.y, false), null, null, 0.1)).toContainEqual({ type: "close", id: "w" });
+    const it2 = bigIt(); const w2 = win(it2);
+    expect(run(it2, S(w2.x - 50, w2.y - (w2.h * w2.scale) / 2 + 20, false), 2)).toContainEqual({ type: "close", id: "w" });
+  });
+  it("arrastrar la barra de titulo mueve la ventana", () => {
+    const it = bigIt(); const w = win(it); const y0 = w.y;
+    const p = { x: w.x, y: w.y - (w.h * w.scale) / 2 + 20 };
+    step(it, S(p.x, p.y, false)); step(it, S(p.x, p.y, true));
+    for (let i = 1; i <= 15; i++) step(it, S(p.x + i * 10, p.y + i * 6, true));
+    expect(w.x).toBeGreaterThan(640 + 100); expect(w.y).toBeGreaterThan(y0 + 60);
+  });
+  it("pellizcar y arrastrar el cuerpo desplaza (no mueve); quieto ~1 s pasa a mover", () => {
+    const it = bigIt(); const w = win(it); const x0 = w.x, y0 = w.y;
+    step(it, S(w.x, w.y, false)); step(it, S(w.x, w.y, true));
+    let total = 0;
+    for (let i = 1; i <= 10; i++) for (const e of step(it, S(w.x, w.y - i * 15, true))) if (e.type === "scroll") total += e.dy;
+    expect(total).toBeGreaterThan(100); expect(w.x).toBe(x0); expect(w.y).toBe(y0);
+    const cy = it.slots[0].cursor.y;
+    run(it, S(w.x, cy, true), HOLD_S + 0.3);                           // quieto: se promueve a "mover"
+    expect(it.slots[0].mode).toBe("move");
+    for (let i = 1; i <= 10; i++) step(it, S(w.x + i * 12, cy, true));
+    expect(w.x).toBeGreaterThan(x0 + 60);
+  });
+  it("apuntando a la franja de arriba/abajo del cuerpo desplaza sin pellizcar", () => {
+    const it = bigIt(); const w = win(it);
+    const half = (w.h * w.scale) / 2;
+    const down = run(it, S(w.x, w.y + half - 12, false), 0.5).filter((e) => e.type === "scroll");
+    expect(down.length).toBeGreaterThan(5); expect(down.every((e) => e.dy > 0 && e.id === "w")).toBe(true);
+    const up = run(it, S(w.x, w.y - half + 48 * w.scale + 10, false), 0.5).filter((e) => e.type === "scroll");
+    expect(up.every((e) => e.dy < 0)).toBe(true);
+    expect(run(it, S(w.x, w.y, false), 0.5).some((e) => e.type === "scroll")).toBe(false);
+  });
+  it("mover una tarjeta y quedarse quieto ~1 s la pone en modo giro 3D; soltar conserva la inclinacion", () => {
+    const it = mk(); const c = card(it);
+    step(it, S(400, 300, false)); step(it, S(400, 300, true));
+    for (let i = 1; i <= 8; i++) step(it, S(400 + i * 10, 300, true));          // "carga" la tarjeta
+    run(it, S(480, 300, true), HOLD_S + 0.3);
+    expect(it.slots[0].mode).toBe("rotate");
+    for (let i = 1; i <= 20; i++) step(it, S(480 + i * 10, 300 + i * 4, true));
+    expect(c.ry).toBeGreaterThan(0.5); expect(c.rx).toBeGreaterThan(0.2);
+    expect(Math.abs(c.ry)).toBeLessThanOrEqual(TILT.max); const xr = c.x;
+    step(it, S(680, 380, false));
+    expect(c.ry).toBeGreaterThan(0.5); expect(c.x).toBe(xr);
+  });
+  it("quieto sin haber movido nada no gira (sigue siendo un toque largo)", () => {
+    const it = mk(); card(it);
+    step(it, S(400, 300, false)); step(it, S(400, 300, true));
+    run(it, S(400, 300, true), HOLD_S + 0.5);
+    expect(it.slots[0].mode).toBe("move");
+  });
+  it("el raton con shift gira de inmediato", () => {
+    const it = mk(); const c = card(it);
+    step(it, null, null, { cursor: { x: 400, y: 300 }, pinching: false });
+    step(it, null, null, { cursor: { x: 400, y: 300 }, pinching: true, rotate: true });
+    for (let i = 1; i <= 10; i++) step(it, null, null, { cursor: { x: 400 + i * 10, y: 300 }, pinching: true, rotate: true });
+    expect(c.ry).toBeGreaterThan(0.3); expect(c.x).toBe(400);
+  });
+  it("lista: tocar una fila emite row; por permanencia tambien; la cabecera no", () => {
+    const it = mk(); const c = it.addCard("l", 340, 300, { kind: "list", rows: [{ id: "a", y0: 50, y1: 90 }, { id: "b", y0: 90, y1: 130 }] });
+    c.x = 400; c.y = 300;
+    const rowY = (top: number) => 300 - 150 + top;
+    step(it, S(380, rowY(110), false)); step(it, S(380, rowY(110), true));
+    expect(step(it, S(380, rowY(110), false), null, null, 0.1)).toContainEqual({ type: "row", id: "l", row: "b" });
+    const it2 = mk(); const c2 = it2.addCard("l", 340, 300, { kind: "list", rows: [{ id: "a", y0: 50, y1: 90 }] }); c2.x = 400; c2.y = 300;
+    expect(run(it2, S(380, rowY(70), false), 1.6)).toContainEqual({ type: "row", id: "l", row: "a" });
+    const it3 = mk(); const c3 = it3.addCard("l", 340, 300, { kind: "list", rows: [{ id: "a", y0: 50, y1: 90 }] }); c3.x = 400; c3.y = 300;
+    step(it3, S(380, rowY(20), false)); step(it3, S(380, rowY(20), true));
+    expect(step(it3, S(380, rowY(20), false), null, null, 0.1).some((e) => e.type === "row")).toBe(false);
+  });
+  it("arrastrar una lista por una fila la mueve y NO selecciona la fila", () => {
+    const it = mk(); const c = it.addCard("l", 340, 300, { kind: "list", rows: [{ id: "a", y0: 50, y1: 90 }] }); c.x = 400; c.y = 300;
+    const ev: any[] = [];
+    step(it, S(380, 200 + 70, false)); step(it, S(380, 270, true));
+    for (let i = 1; i <= 15; i++) ev.push(...step(it, S(380 + i * 10, 270 + i * 5, true)));
+    ev.push(...step(it, S(530, 345, false), null, null, 0.3));
+    expect(ev.some((e) => e.type === "row")).toBe(false); expect(c.x).toBeGreaterThan(500);
+  });
+  it("lanzar una tarjeta con fuerza fuera de la pantalla la descarta", () => {
+    const it = mk(); card(it, "c", 700, 300);
+    step(it, S(700, 300, false)); step(it, S(700, 300, true));
+    for (let i = 1; i <= 6; i++) step(it, S(700 + i * 40, 300, true), null, null, 0.016);   // ~2500 px/s
+    let closed = step(it, S(940, 300, false), null, null, 0.016).some((e) => e.type === "close" && e.id === "c");
+    for (let i = 0; i < 60 && !closed; i++) closed = step(it, null).some((e) => e.type === "close" && e.id === "c");
+    expect(closed).toBe(true); expect(it.cards.size).toBe(0);
+  });
+  it("un lanzamiento suave rebota y se queda; arrastrar fuera y soltar la devuelve adentro", () => {
+    const it = mk(); const c = card(it, "c", 600, 300);
+    step(it, S(600, 300, false)); step(it, S(600, 300, true));
+    for (let i = 1; i <= 8; i++) step(it, S(600 + i * 40, 300, true), null, null, 0.03);
+    step(it, S(1000, 300, false), null, null, 0.2);   // soltada lejos fuera de la pantalla, sin velocidad
+    for (let i = 0; i < 5; i++) step(it, null);
+    expect(it.cards.has("c")).toBe(true);
+    expect(c.x).toBeLessThanOrEqual(800 - 40 + 1); expect(c.x).toBeGreaterThanOrEqual(0);
+  });
+  it("las dos manos pellizcando hacen zoom de la ventana; el nucleo no cuenta como objetivo", () => {
+    const it = bigIt(); const w = win(it); const s0 = w.scale;
+    step(it, S(w.x, w.y, false), S(w.x + 200, w.y, false));
+    step(it, S(w.x, w.y, true), S(w.x + 200, w.y, false)); step(it, S(w.x, w.y, true), S(w.x + 200, w.y, true));
+    for (let i = 0; i < 10; i++) step(it, S(w.x, w.y, true), S(w.x + 200, w.y, true));
+    for (let i = 0; i < 30; i++) step(it, S(w.x - 100, w.y, true), S(w.x + 300, w.y, true));
+    expect(w.scale).toBeGreaterThan(s0 * 1.3);
+  });
+  it("ordenar no mueve las ventanas y deja la inclinacion a cero", () => {
+    const it = bigIt(); const w = win(it); const c = it.addCard("c", 300, 200); c.rx = 0.5; c.ry = 0.5; const wx = w.x;
+    it.arrange();
+    expect(c.rx).toBe(0); expect(c.ry).toBe(0); expect(w.x).toBe(wx);
   });
 });
