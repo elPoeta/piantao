@@ -7,7 +7,7 @@ import pytest
 
 from piantao.core import EventBus
 from piantao.web import PairingManager, SessionStore, WebConfig, WebConfigError, WebGateway
-from piantao.web.gateway import CSRF_HEADER, COOKIE
+from piantao.web.gateway import CSRF_HEADER, COOKIE, STATIC
 
 
 def run(coro):
@@ -363,3 +363,36 @@ def test_static_path_traversal_blocked(tmp_path):
         finally:
             await gw.stop()
     run(go())
+
+
+def test_hud_and_pwa_shell_files_are_served_with_fixed_names_and_security_headers(tmp_path):
+    async def go():
+        gw, *_ = make_gw(tmp_path)
+        await gw.start()
+        try:
+            async with aiohttp.ClientSession() as s:
+                hud = await s.get(gw.url + "/hud")
+                assert hud.status == 200 and "text/html" in hud.headers["Content-Type"] and "default-src 'none'" in hud.headers["Content-Security-Policy"]
+                for name, ctype in (("manifest.webmanifest", "application/manifest+json"), ("sw.js", "javascript"), ("icon.svg", "image/svg+xml"),
+                                    ("icon-192.png", "image/png"), ("icon-512.png", "image/png")):
+                    r = await s.get(f"{gw.url}/{name}")
+                    assert r.status == 200 and ctype in r.headers["Content-Type"], name
+                    assert r.headers["X-Content-Type-Options"] == "nosniff"
+                # nada fuera de la lista fija, y el Host sigue controlado
+                for bad in ("/manifest.json", "/sw.js/..%2f..%2fmain.py", "/icon-192.png%00", "/hud/../main.py"):
+                    assert (await s.get(gw.url + bad)).status in (400, 403, 404), bad
+                r = await s.get(gw.url + "/sw.js", headers={"Host": "evil.example"})
+                assert r.status == 421
+                man = json.loads(await (await s.get(gw.url + "/manifest.webmanifest")).text())
+                assert man["start_url"] == "/" and man["display"] == "standalone" and any(i["sizes"] == "512x512" for i in man["icons"])
+        finally:
+            await gw.stop()
+    run(go())
+
+
+def test_service_worker_never_caches_api_ws_or_session_data():
+    code = "\n".join(l for l in (STATIC / "sw.js").read_text(encoding="utf-8").splitlines() if not l.strip().startswith("//"))
+    assert '"/assets/"' in code
+    for forbidden in ("/api", "/ws", "/media", "/vision"):
+        assert forbidden not in code, forbidden
+    assert 'req.method !== "GET"' in code and "url.origin !== self.location.origin" in code

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Link, PiantaoEvent, Snapshot, logout, sessionPaired } from "./api";
 import { Chat, Msg, applyChat } from "./Chat";
 import { ConfirmModal, ConfirmReq } from "./Confirm";
@@ -8,10 +8,11 @@ import { VoiceClient, VoiceMode } from "./voice";
 import { VisionClient } from "./vision";
 import { VisionBar, VisionUi } from "./VisionBar";
 import { Skills } from "./Skills";
+import { Panel } from "./Panel";
 import type { BoardCard, Holo as HoloT } from "./Holo";
 
 type Status = "connecting" | "open" | "closed" | "unauthorized";
-type Tab = "chat" | "holo" | "skills" | "estado";
+type Tab = "chat" | "holo" | "skills" | "panel";
 const STATE_LABEL: Record<string, string> = { idle: "En reposo", listening: "Escuchando", thinking: "Pensando", speaking: "Hablando", acting: "Actuando", confirming: "Esperando tu permiso" };
 
 export function App() {
@@ -125,20 +126,13 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
     run(link.current?.command("permission_answer", { id, allow, phrase }).then(() => setConfirms((c) => c.filter((x) => x.id !== id))));
 
   const state = String(snap.state ?? "idle");
-  const res = (snap.resources ?? {}) as Record<string, any>;
-  const rows = useMemo(() => [
-    ["Proveedor", snap.provider], ["Modelo", snap.model], ["Razonamiento", snap.reasoning], ["Modo", snap.mode],
-    ["Memoria", snap.memory === undefined ? undefined : snap.memory ? "activa" : "apagada"],
-    ["Incognito", snap.incognito === undefined ? undefined : snap.incognito ? "si" : "no"],
-  ].filter(([, v]) => v !== undefined && v !== null), [snap]);
-
   return (
     <div class="shell">
       <header>
         <div class={`orb orb-${state}`} aria-hidden="true" />
         <div class="title"><h1>Piantao</h1><span class="state" aria-live="polite">{STATE_LABEL[state] ?? state}</span></div>
         <nav class="tabs" role="tablist">
-          {(["chat", "holo", "skills", "estado"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : t === "holo" ? "Holo" : t === "skills" ? "Skills" : "Estado"}</button>)}
+          {(["chat", "holo", "skills", "panel"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : t === "holo" ? "Holo" : t === "skills" ? "Skills" : "Panel"}</button>)}
         </nav>
         <span class={`pill pill-${status}`}>{status === "open" ? "conectado" : status === "connecting" ? "conectando" : "reconectando"}</span>
         <button class="ghost" onClick={onLogout}>Cerrar sesion</button>
@@ -147,19 +141,7 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} onPin={pin}
         extra={<><VisionBar ui={vis} onToggle={toggleCam} onVideo={(v, c) => vision.current?.attach(v, c)} onCalibrate={calibrate} onApply={applyCal} /><VoiceBar ui={vui} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggle={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))}
           onStop={() => run(voice.current?.interrupt())} onReadAloud={(readAloud) => patchVoice({ readAloud })} /></>} /> : (
-        <main class="grid">
-          <section class="card"><h2>Sesion</h2>
-            <dl>{rows.map(([k, v]) => <><dt>{String(k)}</dt><dd>{String(v)}</dd></>)}</dl>
-          </section>
-          <section class="card"><h2>Recursos</h2>
-            {Object.keys(res).length === 0 ? <p class="muted">Sin datos todavia.</p> :
-              <dl>{Object.entries(res).map(([k, v]) => <><dt>{k}</dt><dd>{typeof v === "number" ? Math.round(v * 10) / 10 : String(v)}</dd></>)}</dl>}
-          </section>
-          <section class="card wide"><h2>Eventos en vivo</h2>
-            {log.length === 0 ? <p class="muted">Esperando actividad...</p> :
-              <ul class="log">{log.map((e, i) => <li key={`${e.ts}-${i}`}><time>{new Date(e.ts * 1000).toLocaleTimeString()}</time> <b>{e.kind}</b> <span>{JSON.stringify(e.data)}</span></li>)}</ul>}
-          </section>
-        </main>
+        <Panel link={link.current} connected={status === "open"} snap={snap} log={log} />
       )}
       {tab === "holo" && link.current && vision.current && (HoloView ? (
         <HoloView link={link.current} vision={vision.current} vis={vis} vui={vui} state={state} connected={status === "open"} cards={board} msgs={msgs} busy={busy}

@@ -26,6 +26,9 @@ CSRF_HEADER = "X-Piantao"
 QUEUE_SIZE = 256
 LONG_COMMANDS = {"voice_start": 120.0}  # cargar Whisper y Kokoro la primera vez puede tardar
 STATIC = Path(__file__).parent / "static"
+# archivos de la carcasa PWA (sin datos de sesion): se sirven por nombre fijo, nunca por ruta libre
+SHELL_FILES = {"manifest.webmanifest": "application/manifest+json", "sw.js": "text/javascript", "icon.svg": "image/svg+xml",
+               "icon-192.png": "image/png", "icon-512.png": "image/png"}
 
 CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; "
        "font-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; "
@@ -74,6 +77,8 @@ class WebGateway:
             web.get("/", self._index), web.get("/api/session", self._session), web.post("/api/pair", self._pair),
             web.post("/api/logout", self._logout), web.get("/ws", self._ws), web.get("/vision/hand_landmarker.task", self._hand_model),
             web.get("/media/{name}", self._media), web.get("/api/file", self._file),
+            web.get("/hud", self._index),  # misma aplicacion, vista HUD (la distingue el frontend por la ruta)
+            *(web.get(f"/{n}", self._shell_file) for n in SHELL_FILES),
         ])
         if (self.static / "mediapipe").is_dir():
             app.router.add_static("/mediapipe", self.static / "mediapipe", follow_symlinks=False)
@@ -147,6 +152,13 @@ class WebGateway:
         if not f.is_file():
             return web.Response(status=503, text="Interfaz no compilada: ejecuta `npm run build` en web/")
         return web.Response(body=f.read_bytes(), content_type="text/html", charset="utf-8")
+
+    async def _shell_file(self, request: web.Request) -> web.StreamResponse:
+        name = request.path.lstrip("/")
+        f = self.static / name
+        if name not in SHELL_FILES or not f.is_file():
+            return web.Response(status=404, text="no encontrado")
+        return web.Response(body=f.read_bytes(), content_type=SHELL_FILES[name])
 
     async def _hand_model(self, request: web.Request) -> web.StreamResponse:
         f = self.hand_model

@@ -204,6 +204,7 @@ Cada fase termina con algo que se usa y se prueba en tu hardware, como hasta aho
 | **W3** | **Visión web**: MediaPipe en el navegador, landmarks al servidor, gestos semánticos y confirmaciones, calibración en pantalla | Confirmar con pulgar y interrumpir con palma desde el navegador |
 | **W4** | **Holo**: escena three.js, anillo, tarjetas, órbitas, manipulación con manos, herramientas `board_*` | La interfaz holográfica con las manos |
 | **W5** | Paridad de paneles (MCP, permisos, auditoría, métricas, ajustes), HTTPS y acceso remoto privado, PWA | Reemplazo completo de panel Qt y HUD |
+|  | *W5a (hecha):* pestaña **Panel** (estado, historial, memoria, herramientas/MCP, permisos que solo endurecen, auditoría), vista **`/hud`** (orbe + tarjeta de permisos) y **PWA** (manifest + service worker que solo cachea la carcasa). *W5b:* HTTPS/acceso remoto opcional y retiro de Qt/`talk.py`. | |
 | **W6** | Endurecimiento: seguridad web (CSWSH, rebinding, XSS, inyección por tarjetas), carga, estabilidad de horas, presupuesto de VRAM/CPU, accesibilidad | Lista de verificación firmada |
 
 Orden: W0 → W1 → WS → W2 → W3 → W4 → W5 → W6. W1 sola ya reemplaza la terminal; W4 es la más vistosa pero la que más depende de W2/W3.

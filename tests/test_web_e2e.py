@@ -65,7 +65,7 @@ def test_pair_from_url_hash_shows_live_shell_without_csp_violations(browser, tmp
         page.goto(srv.gw.pair_url(srv.code()))
         page.wait_for_selector("text=conectado", timeout=8000)
         assert page.locator("h1").first.inner_text() == "Piantao"
-        page.click("role=tab[name='Estado']")
+        page.click("role=tab[name='Panel']")
         assert "bolt-4b" in page.inner_text("body")
         assert "pair=" not in page.url  # el codigo se borra de la barra
         assert page.evaluate("document.cookie") == ""  # la cookie es HttpOnly
@@ -814,3 +814,187 @@ def test_holo_text_explorer_is_an_accessible_alternative_and_images_load(browser
         assert problems == [], problems
         res = page.evaluate("""async () => { const r = await fetch('/api/file?root=0&path=../x.png'); return r.status; }""")
         assert res == 404
+
+
+class PanelServer(ChatServer):
+    """ChatServer + los comandos del panel (los mismos nombres que `build_handlers`), con datos de mentira y registro de llamadas."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path, lambda srv, text: _nothing())
+        self.calls = []
+        self.perms = [{"action": "file_read", "level": 1, "policy": "auto", "tightened": False},
+                      {"action": "run_command", "level": 3, "policy": "confirm", "tightened": False},
+                      {"action": "service_control", "level": "never", "policy": "never", "tightened": False}]
+        outer = self
+
+        def snap():
+            return {"state": "idle", "mode": "serve", "uptime_s": 42, "provider": "local", "providers": ["local", "nvidia"], "model": "bolt-4b",
+                    "cloud": False, "reasoning": "auto", "incognito": False, "memory": True, "gestures_active": False,
+                    "tools": [{"name": "files_read", "source": "builtin", "action": "file_read", "untrusted": False},
+                              {"name": "web_fetch", "source": "mcp:web", "action": "web", "untrusted": True}],
+                    "mcp": [{"name": "web", "state": "running", "detail": "", "tools": 2}, {"name": "notes", "state": "paused", "detail": "x", "tools": 1}],
+                    "resources": {"ram_used_mb": 8000, "ram_total_mb": 32000, "gpu_used_mib": 4096, "gpu_total_mib": 8192, "gpu_temp_c": 55, "gpu_util_pct": 30},
+                    "voice": {"mode": "ptt", "stt": "whisper", "tts": "kokoro", "confirm": {"active": True, "enabled": True, "allow_explicit": False, "allow_tainted": False}},
+                    "vision": {"active": False, "device": "/dev/video0", "fps": 15, "confirm_with_gestures": True, "interrupt_with_palm": True, "recent": []}}
+
+        async def get_snapshot(_a):
+            return snap()
+
+        async def get_permissions(_a):
+            return outer.perms
+
+        async def tighten(a):
+            outer.calls.append(("tighten", a))
+            row = next(r for r in outer.perms if r["action"] == a["action"])
+            names = {3: "confirm", 4: "confirm_explicit", "never": "never"}
+            row.update(level=a["level"], policy=names[a["level"]], tightened=True)
+            return outer.perms
+
+        async def query(a):
+            outer.calls.append(("query", a))
+            k = a["kind"]
+            if k == "conversations":
+                return [{"id": 7, "title": "Charla <b>uno</b>", "started_at": 1_700_000_000, "messages": 2}]
+            if k == "messages":
+                return [{"role": "user", "content": "hola <img src=x onerror=alert(1)>"}, {"role": "assistant", "content": "chau"}]
+            if k == "memories":
+                return [{"kind": "note", "content": "mi nota", "source": "user", "created_at": 1_700_000_000, "expires_at": None}]
+            if k == "preferences":
+                return {"idioma": "es"}
+            if k == "tool_history":
+                return [{"tool": "files_read", "ok": 1, "ms": 12}]
+            if k == "stats":
+                return {"path": "/secreto/memory.db", "counts": {"messages": 5}, "bytes": 100}
+            return [{"seq": 1, "ts": "2026-11-13T10:00:00+00:00", "event": "web_pair", "ok": True, "hash": "h", "prev": "p"}]
+
+        def mcp(name):
+            async def fn(a):
+                outer.calls.append((name, a))
+                return {"name": a["server"], "state": "running" if name == "mcp_restart" else "paused", "detail": "", "tools": 2}
+            return fn
+
+        async def reasoning(a):
+            outer.calls.append(("set_reasoning", a)); return a["mode"]
+
+        async def select(a):
+            outer.calls.append(("select_model", a)); return {"provider": a["provider"], "model": "m", "cloud": a["provider"] == "nvidia"}
+
+        self.gw.snapshot = snap
+        self.gw.handlers.update({"get_snapshot": get_snapshot, "get_permissions": get_permissions, "tighten_permission": tighten, "query": query,
+                                 "set_reasoning": reasoning, "select_model": select})
+        self.gw.handlers["mcp_restart"], self.gw.handlers["mcp_pause"] = mcp("mcp_restart"), mcp("mcp_pause")
+
+
+async def _nothing():
+    return
+    yield
+
+
+def _page_problems(page):
+    problems = []
+    page.on("console", lambda m: problems.append(m.text) if m.type in ("error", "warning") else None)
+    page.on("pageerror", lambda e: problems.append(str(e)))
+    return problems
+
+
+def test_panel_status_models_resources_and_voice_vision_match_the_qt_panel(browser, tmp_path):
+    with PanelServer(tmp_path) as srv:
+        page = browser.new_page()
+        problems = _page_problems(page)
+        pair_and_open(page, srv)
+        page.click("role=tab[name='Panel']")
+        page.wait_for_selector("role=progressbar[name='VRAM']", timeout=5000)
+        assert page.get_attribute("role=progressbar[name='VRAM']", "aria-valuenow") == "50"
+        assert page.get_attribute("role=progressbar[name='RAM']", "aria-valuenow") == "25"
+        body = page.inner_text("body")
+        assert "bolt-4b" in body and "Local: nada sale de tu equipo" in body and "kokoro" in body and "/dev/video0" in body
+        page.select_option("label:has-text('Proveedor') select", "nvidia")
+        page.select_option("label:has-text('Razonamiento') select", "off")
+        for _ in range(50):
+            if ("select_model", {"provider": "nvidia"}) in srv.calls and ("set_reasoning", {"mode": "off"}) in srv.calls:
+                break
+            page.wait_for_timeout(100)
+        assert ("select_model", {"provider": "nvidia"}) in srv.calls and ("set_reasoning", {"mode": "off"}) in srv.calls
+        assert problems == [], problems
+
+
+def test_panel_tools_mcp_buttons_and_permissions_can_only_tighten(browser, tmp_path):
+    with PanelServer(tmp_path) as srv:
+        page = browser.new_page()
+        problems = _page_problems(page)
+        pair_and_open(page, srv)
+        page.click("role=tab[name='Panel']")
+        page.click("role=tab[name='Herramientas']")
+        page.wait_for_selector("td:has-text('mcp:web')", timeout=5000)
+        assert page.is_disabled("button:has-text('Reiniciar')")
+        page.click("tr:has(td:text-is('notes'))")
+        page.click("button:has-text('Reiniciar')")
+        page.wait_for_selector("text=MCP: notes", timeout=5000)
+        assert ("mcp_restart", {"server": "notes"}) in srv.calls
+        page.click("role=tab[name='Permisos']")
+        page.wait_for_selector("td:has-text('run_command')", timeout=5000)
+        for b in ("Pedir confirmacion", "Confirmacion explicita", "Bloquear"):
+            assert page.is_disabled(f"button:has-text('{b}')")            # sin fila elegida no hay nada que endurecer
+        page.click("tr:has(td:text-is('service_control'))")               # ya bloqueada: no hay nada mas estricto
+        assert all(page.is_disabled(f"button:has-text('{b}')") for b in ("Pedir confirmacion", "Confirmacion explicita", "Bloquear"))
+        page.click("tr:has(td:text-is('run_command'))")                   # en "confirmacion": no se ofrece aflojar ni repetir
+        assert page.is_disabled("button:has-text('Pedir confirmacion')")
+        assert not page.is_disabled("button:has-text('Bloquear')") and not page.is_disabled("button:has-text('Confirmacion explicita')")
+        page.click("button:has-text('Bloquear')")
+        page.wait_for_selector("text=Permiso endurecido", timeout=5000)
+        assert ("tighten", {"action": "run_command", "level": "never"}) in srv.calls
+        assert page.locator("tr:has(td:text-is('run_command')) td:text-is('bloqueado')").count() == 1
+        assert problems == [], problems
+
+
+def test_panel_history_memory_and_audit_render_data_as_plain_text(browser, tmp_path):
+    with PanelServer(tmp_path) as srv:
+        page = browser.new_page()
+        problems = _page_problems(page)
+        pair_and_open(page, srv)
+        page.click("role=tab[name='Panel']")
+        page.click("role=tab[name='Historial']")
+        page.click("button:has-text('Charla <b>uno</b>')")
+        page.wait_for_selector("text=chau", timeout=5000)
+        assert page.locator(".transcript img, .skill-row b").count() == 0     # nada de HTML interpretado
+        assert "hola <img src=x onerror=alert(1)>" in page.inner_text(".transcript")
+        page.click("role=tab[name='Memoria']")
+        page.wait_for_selector("td:text-is('mi nota')", timeout=5000)
+        assert "idioma" in page.inner_text("body") and "/secreto" not in page.inner_text("body")   # no se muestra la ruta de la base
+        page.click("role=tab[name='Seguridad']")
+        page.wait_for_selector("td:text-is('web_pair')", timeout=5000)
+        assert "\"hash\"" not in page.inner_text("table") and "ok" in page.inner_text("table")
+        assert problems == [], problems
+
+
+def test_hud_view_shows_state_and_answers_a_permission_and_pwa_registers(browser, tmp_path):
+    with PanelServer(tmp_path) as srv:
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        problems = _page_problems(page)
+        pair_and_open(page, srv)
+        # la PWA: manifest enlazado y service worker activo bajo la CSP estricta
+        assert page.get_attribute("link[rel=manifest]", "href") == "/manifest.webmanifest"
+        for _ in range(50):
+            if page.evaluate("() => !!navigator.serviceWorker.controller || false") or page.evaluate("async () => (await navigator.serviceWorker.getRegistration())?.active?.state") == "activated":
+                break
+            page.wait_for_timeout(100)
+        assert page.evaluate("async () => (await navigator.serviceWorker.getRegistration())?.active?.state") == "activated"
+        # el HUD comparte la sesion y muestra el estado en vivo
+        hud = ctx.new_page()
+        hproblems = _page_problems(hud)
+        hud.goto(srv.gw.url + "/hud")
+        hud.wait_for_selector("[data-state='idle']", timeout=8000)
+        srv.bus.publish("state", state="thinking")
+        hud.wait_for_selector("[data-state='thinking']", timeout=5000)
+        assert hud.locator("nav, header").count() == 0                         # vista minima, sin la app completa
+        # un permiso pedido por el agente aparece en el HUD y se contesta desde ahi
+        from piantao.security import ActionRequest
+        fut = asyncio.run_coroutine_threadsafe(srv.confirm(ActionRequest(kind="web_fetch", description="Leer una <i>pagina</i>", origin="model"), False), srv.loop)
+        hud.wait_for_selector(".hud-card", timeout=5000)
+        assert "Leer una <i>pagina</i>" in hud.inner_text(".hud-card") and hud.locator(".hud-card i").count() == 0
+        hud.click(".hud-card button:has-text('Denegar')")
+        hud.wait_for_selector(".hud-card", state="detached", timeout=5000)
+        assert fut.result(5) is False
+        assert hproblems == [] and problems == [], (hproblems, problems)
+
