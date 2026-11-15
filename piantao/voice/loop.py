@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Any, Awaitable, Callable
 
+from piantao.core.mood import tool_state
+
 from .audio import to_float32
 
 # Frases que Whisper "alucina" con ruido o silencio.
@@ -300,7 +302,7 @@ class VoiceLoop:
                     self.pipe.feed(ev.text)
                 elif ev.kind == "tool_start" and ev.tool_calls:
                     tools_used += len(ev.tool_calls)
-                    self._state("tool")
+                    self._state(tool_state(getattr(self.agent, "tools", None), ev.tool_calls[0]))
                     self.out(f"\n[herramienta: {', '.join(t.name for t in ev.tool_calls)}]\nPiantao: ", end="", flush=True)
                 elif ev.kind == "tool_result" and ev.result is not None:
                     r = ev.result

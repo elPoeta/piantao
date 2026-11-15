@@ -3,7 +3,7 @@ import { App } from "./App";
 import { Hud } from "./Hud";
 import "./styles.css";
 
-// /hud es la misma aplicacion con otra vista (orbe + permisos), sin enrutador ni dependencias extra.
+// /hud es la misma aplicacion con otra vista (figura + permisos), sin enrutador ni dependencias extra.
 const isHud = location.pathname.replace(/\/+$/, "") === "/hud";
 render(isHud ? <Hud /> : <App />, document.getElementById("app")!);
 

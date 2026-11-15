@@ -10,14 +10,19 @@ def base():
     return load_config()
 
 
-@pytest.mark.parametrize("hud", [{"corner": "centro"}, {"size": 5}, {"size": True}, {"opacity": 0.01},
-                                 {"margin": -1}, {"click_through": "si"}, {"hide_when_idle": 1}])
-def test_bad_hud_config_is_rejected(base, hud):
-    cfg = copy.deepcopy(base)
-    cfg["ui"]["hud"] = hud
-    with pytest.raises(ConfigError, match="hud"):
-        _validate(cfg)
-
-
-def test_default_hud_config_is_valid(base):
+def test_default_ui_config_is_valid(base):
     _validate(copy.deepcopy(base))
+
+
+def test_old_hud_section_from_the_qt_hud_is_ignored(base):
+    cfg = copy.deepcopy(base)
+    cfg["ui"]["hud"] = {"corner": "centro", "size": 5}   # el HUD Qt ya no existe: una config vieja no debe romper el arranque
+    _validate(cfg)
+
+
+@pytest.mark.parametrize("ipc", [{"enabled": "si"}, {"socket": ""}, {"resources_interval_s": 0}])
+def test_bad_ipc_config_is_rejected(base, ipc):
+    cfg = copy.deepcopy(base)
+    cfg["ui"]["ipc"] = ipc
+    with pytest.raises(ConfigError, match="ipc"):
+        _validate(cfg)

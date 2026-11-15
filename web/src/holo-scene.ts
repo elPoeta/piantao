@@ -3,7 +3,8 @@
 import * as THREE from "three";
 import type { Interaction } from "./holo-logic";
 
-const STATE_COLOR: Record<string, number> = { idle: 0x5b7794, listening: 0x5ee6a8, thinking: 0x4cc9f0, speaking: 0xb388ff, acting: 0xf4a261, confirming: 0xf4a261 };
+import spriteUrl from "./assets/piantao-sprite.webp";
+import { BLINK_S, CELL_H, CELL_W, POSES, cellOf, colorOf, poseFor } from "./sprites";
 
 const over = (m: THREE.Mesh | THREE.Line, order: number): void => { m.renderOrder = order; (m.material as THREE.Material).depthTest = false; };
 
@@ -15,6 +16,7 @@ export class HoloScene {
   private board = new THREE.Group();
   private meshes = new Map<string, THREE.Mesh>();
   private ringOuter!: THREE.Mesh; private ringCore!: THREE.Mesh; private ringHalo!: THREE.Mesh;
+  private medal!: THREE.Mesh; private poseTex = new Map<string, THREE.CanvasTexture>(); private shownPose = "";
   private cursors: THREE.Mesh[] = [];
   private link!: THREE.Line;
   private dwell: THREE.Mesh[] = [];
@@ -39,6 +41,10 @@ export class HoloScene {
     this.ringHalo = ring(0.55, 0.9, 0x4cc9f0, 0.18);
     this.ringCore = new THREE.Mesh(new THREE.CircleGeometry(0.4, 40), new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
     over(this.ringCore, 80000); this.scene.add(this.ringCore); this.disposables.push(this.ringCore.geometry, this.ringCore.material as THREE.Material);
+    // medallon con la pose de Piantao dentro del nucleo; mientras carga la hoja se ve el nucleo de siempre
+    this.medal = new THREE.Mesh(new THREE.CircleGeometry(1, 48), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+    this.medal.visible = false; over(this.medal, 80002); this.scene.add(this.medal); this.disposables.push(this.medal.geometry, this.medal.material as THREE.Material);
+    this.loadPoses();
     for (let i = 0; i < 3; i++) {
       const m = new THREE.Mesh(new THREE.RingGeometry(0.7, 1, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }));
       m.visible = false; over(m, 100000); this.scene.add(m); this.cursors.push(m); this.disposables.push(m.geometry, m.material as THREE.Material);
@@ -52,6 +58,29 @@ export class HoloScene {
     this.link = new THREE.Line(lg, new THREE.LineBasicMaterial({ color: 0x5ee6a8, transparent: true, opacity: 0.8 }));
     this.link.visible = false; over(this.link, 99999); this.scene.add(this.link);
     this.disposables.push(lg, this.link.material as THREE.Material);
+  }
+
+  private loadPoses(): void {
+    const img = new Image();
+    img.onload = () => {
+      const S = 256;
+      for (const pose of POSES) {
+        const { col, row } = cellOf(pose);
+        const c = document.createElement("canvas"); c.width = c.height = S;
+        const g = c.getContext("2d");
+        if (!g) continue;
+        // recorte cuadrado de la celda (sombrero hasta los hombros y lo que sostiene), con borde suave
+        g.drawImage(img, col * CELL_W + 20, row * CELL_H + 30, CELL_W - 40, CELL_W - 40, 0, 0, S, S);   // sin los bordes: la hoja tiene manos que invaden la celda vecina
+        g.globalCompositeOperation = "destination-in";
+        const mask = g.createRadialGradient(S / 2, S / 2, S * 0.36, S / 2, S / 2, S * 0.5);
+        mask.addColorStop(0, "#000"); mask.addColorStop(1, "#0000");
+        g.fillStyle = mask; g.fillRect(0, 0, S, S);
+        const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+        this.poseTex.set(pose, tex); this.disposables.push(tex);
+      }
+      this.shownPose = "";
+    };
+    img.src = spriteUrl;
   }
 
   resize(cw: number, ch: number): void {
@@ -122,7 +151,7 @@ export class HoloScene {
       (mesh.material as THREE.MeshBasicMaterial).opacity = c.held !== null ? 1 : c.hover ? 0.98 : 0.9;
     }
     // nucleo: reacciona al estado y al nivel de voz; abierto = gira mas rapido y brilla
-    const col = STATE_COLOR[state] ?? STATE_COLOR.idle;
+    const col = colorOf(state);
     const pulse = 1 + 0.05 * Math.sin(now * 3) + Math.min(0.5, level * 3);
     const r = it.ring.r, open = it.ring.bloom;
     for (const m of [this.ringOuter, this.ringHalo, this.ringCore]) {
@@ -132,6 +161,15 @@ export class HoloScene {
     this.ringOuter.scale.setScalar(r); this.ringOuter.rotation.z = now * (0.4 + 1.6 * open);
     this.ringHalo.scale.setScalar(r * pulse * (1 + 0.15 * open)); this.ringCore.scale.setScalar(r * (0.8 + 0.2 * pulse));
     (this.ringCore.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.3 * open;
+    // la pose sigue al estado del agente; late al ritmo del estado y con la voz
+    const pose = poseFor(state), tex = this.poseTex.get(pose);
+    this.medal.visible = !!tex; this.ringCore.visible = !tex;
+    if (tex) {
+      if (this.shownPose !== pose) { (this.medal.material as THREE.MeshBasicMaterial).map = tex; (this.medal.material as THREE.MeshBasicMaterial).needsUpdate = true; this.shownPose = pose; }
+      const beat = BLINK_S[state] ?? 1.2;
+      this.medal.position.set(it.ring.x, -it.ring.y, 0);
+      this.medal.scale.setScalar(r * 0.94 * (1 + 0.025 * Math.sin((now * Math.PI * 2) / beat) + Math.min(0.2, level * 1.5)));
+    }
     this.orbitMeshes.forEach((m, i) => {
       const o = it.orbits[i];
       if (!o || o.r < 2) { m.visible = false; return; }

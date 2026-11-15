@@ -1,4 +1,3 @@
-import { useEffect } from "preact/hooks";
 import { VoiceMode, VoiceState } from "./voice";
 
 const STATE_TEXT: Record<VoiceState, string> = {
@@ -18,16 +17,6 @@ export function VoiceBar({ ui, onMode, onToggle, onPtt, onStop, onReadAloud }: {
   ui: VoiceUi; onMode: (m: VoiceMode) => void; onToggle: () => void; onPtt: (down: boolean) => void; onStop: () => void; onReadAloud: (v: boolean) => void;
 }) {
   const on = ui.state !== "off";
-
-  useEffect(() => {
-    if (!on || ui.mode !== "ptt") return;
-    const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable);
-    const down = (e: KeyboardEvent) => { if (e.code === "Space" && !e.repeat && !typing(e.target)) { e.preventDefault(); onPtt(true); } };
-    const up = (e: KeyboardEvent) => { if (e.code === "Space" && !typing(e.target)) { e.preventDefault(); onPtt(false); } };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [on, ui.mode]);
 
   if (!ui.available) return null;
   return (

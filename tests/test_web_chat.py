@@ -71,7 +71,7 @@ def test_turn_streams_text_tools_and_returns_to_idle():
         assert evs == ["start", "reasoning", "text", "tool_start", "tool_result", "text", "done"]
         assert sent[0]["text"] == "hola" and sent[-1]["outcome"] == "done"
         tr = next(m for m in sent if m.get("ev") == "tool_result")
-        assert len(tr["text"]) < 1600 and bus.state == "idle"
+        assert len(tr["text"]) < 1600 and bus.state == "celebrating"   # la herramienta salio bien: festeja un momento y luego vuelve a idle
         hist = await h["chat_history"]({})
         assert hist["messages"][0] == {"role": "user", "text": "hola"} and hist["messages"][1]["text"] == "Hola"
     run(go())

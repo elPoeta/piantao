@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HOLD_S, TILT, BOARD_SCALE, CARD_SCALE, DWELL_S, HandsInput, Interaction, OneEuro, PinchFilter, handMetrics, toScreen, type HandSample, type Lm, type Viewport } from "./holo-logic";
+import { POINT_CLOSED, POINT_OPEN, HOLD_S, TILT, BOARD_SCALE, CARD_SCALE, DWELL_S, HandsInput, Interaction, OneEuro, PinchFilter, handMetrics, toScreen, type HandSample, type Lm, type Viewport } from "./holo-logic";
 
 const vp: Viewport = { vw: 640, vh: 480, cw: 800, ch: 600, mirror: false };
 
@@ -520,5 +520,27 @@ describe("W4.3: ventanas 3D, listas, giro, descarte", () => {
     const it = bigIt(); const w = win(it); const c = it.addCard("c", 300, 200); c.rx = 0.5; c.ry = 0.5; const wx = w.x;
     it.arrange();
     expect(c.rx).toBe(0); expect(c.ry).toBe(0); expect(w.x).toBe(wx);
+  });
+});
+
+
+describe("cursor en la punta del dedo", () => {
+  const mkHand = (gap: number): Lm[] => {   // palma de 0.2 de largo; pulgar a `gap` de la punta del indice
+    const l: Lm[] = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.8, z: 0 }));
+    l[9] = { x: 0.5, y: 0.6, z: 0 }; l[8] = { x: 0.5, y: 0.4, z: 0 }; l[4] = { x: 0.5 - gap, y: 0.4 + gap / 2, z: 0 };
+    return l;
+  };
+  it("con la mano abierta el cursor ES la punta del indice, no el punto medio", () => {
+    const m = handMetrics(mkHand(0.3), 1)!;
+    expect(m.pinch).toBeGreaterThan(POINT_OPEN);
+    expect(m.cursor).toEqual({ x: 0.5, y: 0.4 });
+  });
+  it("con la pinza cerrada es el punto de contacto y entre medio se desliza sin saltos", () => {
+    const closed = handMetrics(mkHand(0.04), 1)!;
+    expect(closed.pinch).toBeLessThan(POINT_CLOSED);
+    expect(closed.cursor.x).toBeCloseTo(0.48, 5); expect(closed.cursor.y).toBeCloseTo(0.41, 5);
+    let prev = handMetrics(mkHand(0.3), 1)!.cursor, worst = 0;
+    for (let g = 0.3; g >= 0.04; g -= 0.01) { const c = handMetrics(mkHand(g), 1)!.cursor; worst = Math.max(worst, Math.hypot(c.x - prev.x, c.y - prev.y)); prev = c; }
+    expect(worst).toBeLessThan(0.03);
   });
 });

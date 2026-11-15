@@ -5,7 +5,8 @@ from .chat import ChatSession, WebConfirmer
 from .config import WebConfig, WebConfigError
 from .vision import WebVision
 from .board import Board, register_board
+from .context import OpenContext
 from .files import FileBrowser
 from .gateway import WebGateway
 
-__all__ = ["FileBrowser", "Board", "register_board", "WebVision", "ChatSession", "WebConfirmer", "PairingManager", "SessionStore", "WebConfig", "WebConfigError", "WebGateway"]
+__all__ = ["OpenContext", "FileBrowser", "Board", "register_board", "WebVision", "ChatSession", "WebConfirmer", "PairingManager", "SessionStore", "WebConfig", "WebConfigError", "WebGateway"]

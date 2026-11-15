@@ -15,7 +15,8 @@ from typing import Any, Callable
 
 log = logging.getLogger("piantao.events")
 
-STATES = ("idle", "listening", "transcribing", "thinking", "tool", "speaking", "confirming", "stopped")
+STATES = ("idle", "listening", "transcribing", "thinking", "tool", "speaking", "confirming", "stopped",
+          "searching", "writing", "analyzing", "explaining", "celebrating")
 
 
 @dataclass(frozen=True)

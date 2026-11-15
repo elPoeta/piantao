@@ -430,7 +430,7 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
     gw.board = None
     gw.files = None
     if chat is not None:
-        from piantao.web import Board, FileBrowser, register_board
+        from piantao.web import Board, FileBrowser, OpenContext, register_board
 
         gw.files = FileBrowser.from_config(cfg, PROJECT_ROOT)
         gw.handlers.update(gw.files.handlers())
@@ -438,6 +438,9 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         board = Board(PROJECT_ROOT / "media", gw.broadcast, lambda: gw.clients > 0)
         gw.board = board
         gw.handlers.update(board.handlers())
+        ctx = OpenContext(gw.files, board, getattr(agent, "tools", None))   # lo que el usuario tiene abierto en el holo, visible para el agente
+        gw.handlers.update(ctx.handlers())
+        agent.system_extras.append(ctx.block)
         registry = getattr(agent, "tools", None)
         if registry is not None:
             register_board(registry, board)  # el modelo puede mostrar tarjetas; son solo visuales (nivel 1)
@@ -1003,8 +1006,6 @@ def main() -> int:
     tool_p = sub.add_parser("tool", help="Ejecuta una herramienta sin el modelo (diagnostico)")
     tool_p.add_argument("name", nargs="?", help="Nombre de la herramienta, o 'list'")
     tool_p.add_argument("args", nargs="?", help="Argumentos en JSON, ej: '{\"name\": \"Firefox\"}'")
-    sub.add_parser("panel", help="Abre el panel grafico (requiere PySide6 y un Piantao corriendo)")
-    sub.add_parser("hud", help="Abre el HUD flotante con el estado de Piantao (requiere PySide6)")
     serve_p = sub.add_parser("serve", help="Servicio web en localhost (interfaz en el navegador)")
     serve_p.add_argument("--provider", help="Proveedor")
     serve_p.add_argument("--model", help="Modelo")
@@ -1045,21 +1046,6 @@ def main() -> int:
                                  args.headless, args.tag))
     if args.command == "audit":
         return audit_cmd(cfg, args.verify, args.tail)
-    if args.command == "panel":
-        try:
-            from piantao.ui.panel import run_panel
-        except ImportError:
-            print("Falta PySide6: uv pip install PySide6-Essentials", file=sys.stderr)
-            return 1
-        return run_panel((cfg.get("ui", {}).get("ipc") or {}).get("socket"))
-    if args.command == "hud":
-        try:
-            from piantao.ui.hud import run_hud
-        except ImportError:
-            print("Falta PySide6: uv pip install PySide6-Essentials", file=sys.stderr)
-            return 1
-        ui = cfg.get("ui", {})
-        return run_hud((ui.get("ipc") or {}).get("socket"), ui.get("hud"))
     if args.command == "serve":
         return asyncio.run(serve(cfg, args.provider, args.model, args.resume_last))
     if args.command == "skills":

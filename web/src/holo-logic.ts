@@ -57,6 +57,7 @@ export class OneEuro {
   reset(): void { this.px = null; }
 }
 
+export const POINT_OPEN = 0.85, POINT_CLOSED = 0.4;   // razon de pinza (dedos/palma): arriba de OPEN = punta del indice, debajo de CLOSED = punto de contacto
 export interface HandMetrics { palm: number; pinch: number; thumb: V2; index: V2; cursor: V2 }
 
 /** Metricas de una mano (21 puntos). `aspect` = ancho/alto del video: las distancias se miden sin deformacion. */
@@ -67,7 +68,10 @@ export function handMetrics(lm: Lm[], aspect: number): HandMetrics | null {
   if (palm < 1e-4) return null;
   const pinch = dist(fix(lm[4]), fix(lm[8])) / palm;
   const thumb = { x: lm[4].x, y: lm[4].y }, index = { x: lm[8].x, y: lm[8].y };
-  return { palm, pinch, thumb, index, cursor: { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 } };
+  // El cursor va EN la punta del indice mientras apuntas (el punto medio con el pulgar queda a varios cm de la punta y se siente "atrasado").
+  // Al cerrar la pinza se desliza al punto de contacto: asi el cursor no salta cuando la punta del indice viaja hacia el pulgar.
+  const c = clamp((POINT_OPEN - pinch) / (POINT_OPEN - POINT_CLOSED), 0, 1);
+  return { palm, pinch, thumb, index, cursor: { x: index.x + ((thumb.x + index.x) / 2 - index.x) * c, y: index.y + ((thumb.y + index.y) / 2 - index.y) * c } };
 }
 
 /** Pellizco con histeresis y "merito" de 2 cuadros seguidos (un cuadro ruidoso no pellizca ni suelta). */
@@ -160,7 +164,7 @@ export class Interaction {
   cards = new Map<string, CardModel>();
   board = { scale: 1, tx: 0, ty: 0 };
   /** El nucleo: se mueve (pellizco-arrastre), un toque lo abre/cierra y al abrirse despliega las burbujas. */
-  ring: RingModel = { x: 0, y: 0, r: 44, open: false, bloom: 0 };
+  ring: RingModel = { x: 0, y: 0, r: 62, open: false, bloom: 0 };
   orbitIds: string[] = [];
   orbits: OrbitItem[] = [];
   slots: Slot[] = [newSlot(), newSlot(), newSlot()];
@@ -173,7 +177,7 @@ export class Interaction {
 
   setSize(cw: number, ch: number): void {
     this.cw = cw; this.ch = ch;
-    if (!this.ringMoved) { this.ring.x = Math.min(150, cw / 2); this.ring.y = Math.min(110, ch * 0.2); }  // arriba a la izquierda: no tapa las ventanas centradas
+    if (!this.ringMoved) { this.ring.x = Math.min(170, cw / 2); this.ring.y = Math.min(130, ch * 0.22); }  // arriba a la izquierda: no tapa las ventanas centradas
     else { this.ring.x = clamp(this.ring.x, this.ring.r, cw - this.ring.r); this.ring.y = clamp(this.ring.y, this.ring.r, ch - this.ring.r); }
   }
   setOrbits(ids: string[]): void { this.orbitIds = ids; this.layoutOrbits(); }

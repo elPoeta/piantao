@@ -9,11 +9,12 @@ import { VisionClient } from "./vision";
 import { VisionBar, VisionUi } from "./VisionBar";
 import { Skills } from "./Skills";
 import { Panel } from "./Panel";
+import { Sprite } from "./Sprite";
+import { STATE_LABEL } from "./sprites";
 import type { BoardCard, Holo as HoloT } from "./Holo";
 
 type Status = "connecting" | "open" | "closed" | "unauthorized";
 type Tab = "chat" | "holo" | "skills" | "panel";
-const STATE_LABEL: Record<string, string> = { idle: "En reposo", listening: "Escuchando", thinking: "Pensando", speaking: "Hablando", acting: "Actuando", confirming: "Esperando tu permiso" };
 
 export function App() {
   const [paired, setPaired] = useState<boolean | null>(null);
@@ -111,6 +112,16 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
     return () => { void voice.current?.stop(); void vision.current?.stop(); l.close(); };
   }, []);
 
+  // Mantener la barra espaciadora = hablar (modo pulsar-para-hablar). Vive aca, no en la barra de voz, para que funcione tambien en el holo.
+  useEffect(() => {
+    if (vui.state === "off" || vui.mode !== "ptt") return;
+    const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.tagName === "SELECT" || t.isContentEditable);
+    const down = (e: KeyboardEvent) => { if (e.code === "Space" && !typing(e.target)) { e.preventDefault(); if (!e.repeat) run(voice.current?.ptt(true)); } };
+    const up = (e: KeyboardEvent) => { if (e.code === "Space" && !typing(e.target)) { e.preventDefault(); run(voice.current?.ptt(false)); } };
+    window.addEventListener("keydown", down); window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, [vui.state === "off", vui.mode]);
+
   function run(p: Promise<unknown> | undefined) { p?.catch((e: Error) => { setNotice(e.message); window.setTimeout(() => setNotice(""), 5000); }); }
   const toggleCam = () => run(vis.state === "off" ? vision.current?.start() : vision.current?.stop());
   const calibrate = async (pose: "open" | "closed") => { const r = await vision.current!.calibrate(pose); return `Medido: ${r.samples} muestras (valor ${r.median}).`; };
@@ -129,7 +140,7 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   return (
     <div class="shell">
       <header>
-        <div class={`orb orb-${state}`} aria-hidden="true" />
+        <Sprite state={state} size={60} label={false} />
         <div class="title"><h1>Piantao</h1><span class="state" aria-live="polite">{STATE_LABEL[state] ?? state}</span></div>
         <nav class="tabs" role="tablist">
           {(["chat", "holo", "skills", "panel"] as Tab[]).map((t) => <button role="tab" aria-selected={tab === t} class={tab === t ? "tab on" : "tab"} onClick={() => setTab(t)}>{t === "chat" ? "Chat" : t === "holo" ? "Holo" : t === "skills" ? "Skills" : "Panel"}</button>)}
@@ -145,7 +156,7 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       )}
       {tab === "holo" && link.current && vision.current && (HoloView ? (
         <HoloView link={link.current} vision={vision.current} vis={vis} vui={vui} state={state} connected={status === "open"} cards={board} msgs={msgs} busy={busy}
-          onCloseCard={closeCard} onClearBoard={clearBoard} onSend={send} onStop={stop} onToggleMic={toggleMic} onToggleCam={toggleCam} onExit={() => setTab("chat")} />
+          onPin={pin} onCloseCard={closeCard} onClearBoard={clearBoard} onSend={send} onStop={stop} onToggleMic={toggleMic} onToggleCam={toggleCam} onExit={() => setTab("chat")} />
       ) : <p class="muted">Cargando el holograma...</p>)}
       {confirms.length > 0 && <ConfirmModal key={confirms[0].id} req={confirms[0]} onAnswer={(allow, phrase) => answer(confirms[0].id, allow, phrase)} />}
     </div>

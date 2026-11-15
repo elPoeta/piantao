@@ -1,3 +1,4 @@
+import { Sprite } from "./Sprite";
 import { useEffect, useState } from "preact/hooks";
 import { pair } from "./api";
 
@@ -24,7 +25,7 @@ export function Pair({ onPaired }: { onPaired: () => void }) {
 
   return (
     <main class="pair">
-      <div class="orb orb-idle" aria-hidden="true" />
+      <Sprite state="idle" size={110} label={false} />
       <h1>Piantao</h1>
       <p class="muted">Para vincular este navegador, pedi un codigo en la terminal:</p>
       <pre class="cmd">python main.py pair</pre>

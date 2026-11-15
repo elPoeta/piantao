@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Link, sessionPaired } from "./api";
 import { ConfirmReq, PHRASE } from "./Confirm";
+import { Sprite } from "./Sprite";
+import { STATE_LABEL as LABEL } from "./sprites";
 
-// Vista HUD (/hud): orbe de estado y tarjeta de permisos, pensada para una ventana chica y sin marcos (o "siempre encima" con KWin).
+// Vista HUD (/hud): figura de estado y tarjeta de permisos, pensada para una ventana chica y sin marcos (o "siempre encima" con KWin).
 // Comparte sesion con la pagina principal; si no hay sesion, avisa y no ofrece emparejar aca.
-const LABEL: Record<string, string> = { idle: "En reposo", listening: "Escuchando", thinking: "Pensando", speaking: "Hablando", acting: "Actuando", confirming: "Esperando tu permiso", offline: "Sin conexion" };
 
 export function Hud() {
   const [state, setState] = useState("offline");
@@ -46,7 +47,7 @@ export function Hud() {
   const shown = req ? "confirming" : state;
   return (
     <div class="hud" data-state={shown}>
-      <div class={`orb orb-${shown}`} role="img" aria-label={LABEL[shown] ?? shown} />
+      <Sprite state={shown} size={120} />
       <span class="hud-label small" aria-live="polite">{LABEL[shown] ?? shown}</span>
       {req && (
         <div class="hud-card" role="alertdialog" aria-labelledby="hud-t">

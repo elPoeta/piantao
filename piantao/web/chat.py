@@ -13,11 +13,14 @@ import logging
 import secrets
 from typing import Any, Callable
 
+from piantao.core.mood import CELEBRATING, EXPLAINING, tool_state
+
 log = logging.getLogger("piantao.web.chat")
 Broadcast = Callable[[dict[str, Any]], None]
 EXPLICIT_PHRASE = "CONFIRMAR"
 MAX_USER_TEXT = 8000
 PAYLOAD_PREVIEW = 20000
+CELEBRATE_S = 3.0   # cuanto dura el festejo al terminar un trabajo con herramientas
 
 
 def _clip(text: Any, n: int) -> str:
@@ -138,23 +141,29 @@ class ChatSession:
         self.bus.set_state("thinking")
         send({"t": "chat", "ev": "start", "turn": turn, "text": text, "via": via})
         outcome = "done"
+        tools_used = tools_ok = 0
         if spk is not None:
             spk.begin()
         try:
             async for ev in self.agent.respond(text):
                 if ev.kind == "text":
+                    self.bus.set_state("speaking" if spk is not None else EXPLAINING)
                     if spk is not None:
-                        self.bus.set_state("speaking")
                         spk.feed(ev.text)
                     send({"t": "chat", "ev": "text", "turn": turn, "text": ev.text})
                 elif ev.kind == "reasoning":
                     send({"t": "chat", "ev": "reasoning", "turn": turn, "text": ev.text})
                 elif ev.kind == "tool_start":
                     c = ev.tool_calls[0] if ev.tool_calls else None
+                    tools_used += 1
+                    if c is not None:
+                        self.bus.set_state(tool_state(getattr(self.agent, "tools", None), c))
                     send({"t": "chat", "ev": "tool_start", "turn": turn, "name": ev.text,
                           "args": _clip(getattr(c, "arguments", "") or "", 400)})
                 elif ev.kind == "tool_result" and ev.result is not None:
                     r = ev.result
+                    tools_ok += bool(r.ok and not r.denied)
+                    self.bus.set_state("thinking")
                     send({"t": "chat", "ev": "tool_result", "turn": turn, "name": ev.text, "ok": bool(r.ok),
                           "denied": bool(r.denied), "text": _clip(r.text, 1500)})
                 elif ev.kind == "tool_calls":
@@ -173,8 +182,20 @@ class ChatSession:
                 else:
                     spk.stop()
             if spk is None or outcome != "done":
-                self.bus.set_state("idle")
+                if outcome == "done" and tools_used and tools_ok == tools_used:
+                    self._celebrate()   # trabajo con herramientas terminado sin un solo fallo: un momento de festejo
+                else:
+                    self.bus.set_state("idle")
             send({"t": "chat", "ev": "done", "turn": turn, "outcome": outcome})
+
+    def _celebrate(self) -> None:
+        self.bus.set_state(CELEBRATING)
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().call_later(CELEBRATE_S, self._end_celebration)
+
+    def _end_celebration(self) -> None:
+        if self.bus.state == CELEBRATING:
+            self.bus.set_state("thinking" if self.busy else "idle")
 
     # -- comandos ----------------------------------------------------------------------------------------------------
     def handlers(self) -> dict[str, Callable[[dict[str, Any]], Any]]:

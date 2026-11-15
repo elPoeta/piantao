@@ -26,7 +26,7 @@ const join = (a: string, b: string) => (a ? `${a}/${b}` : b);
 
 interface Props {
   link: Link; vision: VisionClient; vis: VisionUi; vui: VoiceUi; state: string; connected: boolean;
-  cards: BoardCard[]; msgs: Msg[]; busy: boolean;
+  cards: BoardCard[]; msgs: Msg[]; busy: boolean; onPin: (text: string) => void;
   onCloseCard: (id: string) => void; onClearBoard: () => void;
   onSend: (t: string) => void; onStop: () => void; onToggleMic: () => void; onToggleCam: () => void; onExit: () => void;
 }
@@ -61,6 +61,19 @@ export function Holo(p: Props) {
   const refreshList = () => {
     setList([...known.current].map((id) => ({ id, title: meta.current.get(id)?.title ?? id })));
     setWlist([...wins.current.entries()].map(([id, v]) => ({ id, title: v.title })));
+    syncContext();
+  };
+  // El agente ve los documentos que tenes abiertos: se le avisa QUE esta abierto y el servidor lee el contenido (solo carpetas autorizadas).
+  const lastCtx = useRef("[]");
+  const syncContext = (force = false) => {
+    const items = [...wins.current.keys()].map((id) => {
+      const m = /^win-file-(\d+)-([\s\S]*)$/.exec(id);
+      return m ? { root: Number(m[1]), path: m[2] } : { card: id.slice(4) };
+    });
+    const key = JSON.stringify(items);
+    if (!force && key === lastCtx.current) return;
+    lastCtx.current = key;
+    live.current.link.command("ui_context", { items }).catch(() => { lastCtx.current = "[]"; /* sin conexion: se reintenta con el proximo cambio */ });
   };
   const setFxBoth = (f: Fx | null) => { fxRef.current = f; setFx(f); };
 
@@ -232,6 +245,7 @@ export function Holo(p: Props) {
       const w = topWindow();
       if (!w) return;
       const view = wins.current.get(w.id)!;
+      if (e.key === " " && live.current.vui.state !== "off" && live.current.vui.mode === "ptt") return;   // espacio = hablar
       const step: Record<string, number> = { ArrowDown: 60, ArrowUp: -60, PageDown: view.viewH * 0.9, PageUp: -view.viewH * 0.9, " ": view.viewH * 0.9, Home: -1e9, End: 1e9 };
       if (e.key === "Escape") { closeWindow(w.id); e.preventDefault(); }
       else if (e.key in step) { scrollWindow(w.id, step[e.key]); e.preventDefault(); }
@@ -264,6 +278,7 @@ export function Holo(p: Props) {
       cv.removeEventListener("pointercancel", onLeave); cv.removeEventListener("pointerleave", onLeave); cv.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKey);
       v.hands = null; v.owner = null; v.attach(null, null);
+      lastCtx.current = "[]"; live.current.link.command("ui_context", { items: [] }).catch(() => {});   // al salir del holo el agente deja de ver los documentos
       sc.dispose(); scene.current = undefined; known.current.clear(); meta.current.clear(); docs.current.clear(); wins.current.clear(); rowAct.current.clear(); inter.clear();
     };
   }, []);
@@ -277,7 +292,13 @@ export function Holo(p: Props) {
   }, [p.cards]);
 
   const last = [...p.msgs].reverse().find((m) => m.role === "assistant");
-  const caption = last ? last.parts.filter((x) => x.k === "text").map((x) => (x as { t: string }).t).join("").slice(-320) : "";
+  const answer = last ? last.parts.filter((x) => x.k === "text").map((x) => (x as { t: string }).t).join("") : "";
+  const caption = p.busy ? answer.slice(-320) : "";   // mientras escribe se ve el avance; al terminar la respuesta pasa a ser una tarjeta (movible y cerrable)
+  const wasBusy = useRef(p.busy);
+  useEffect(() => {
+    if (wasBusy.current && !p.busy && answer.trim()) p.onPin(answer.trim());
+    wasBusy.current = p.busy;
+  }, [p.busy]);
   const camOn = p.vis.state === "on";
   const micOn = p.vui.state !== "off";
 
@@ -312,7 +333,7 @@ export function Holo(p: Props) {
             </>}
           </nav>
         </details>
-        <span class="small muted holo-help">{camOn ? "Tocá el núcleo para desplegar · apuntá y esperá 1 s = clic · pellizco: mover · quieto 1 s: girar en 3D · dos manos: zoom" : "Clic en una tarjeta para abrirla · arrastrar: mover · Shift+arrastrar: girar 3D · rueda: zoom o desplazar"}</span>
+        <span class="small muted holo-help">{micOn && p.vui.mode === "ptt" ? "Mantené la barra espaciadora para hablar · " : ""}{camOn ? "Tocá el núcleo para desplegar · apuntá y esperá 1 s = clic · pellizco: mover · quieto 1 s: girar en 3D · dos manos: zoom" : "Clic en una tarjeta para abrirla · arrastrar: mover · Shift+arrastrar: girar 3D · rueda: zoom o desplazar"}</span>
         {!webgl && <p class="error small" role="alert">Este navegador no pudo iniciar WebGL: usá las listas de texto.</p>}
         {msg && <p class="error small" role="alert">{msg}</p>}
       </div>

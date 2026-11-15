@@ -197,21 +197,19 @@ antes de actuar. Una rutina solo la nombra el modelo: sus pasos son fijos y cada
 (config en `config/ui.yaml`). El agente no depende del panel: si nadie se conecta, no cuesta nada.
 Para ver eventos en vivo mientras corre `voice`: `python main.py events`.
 
-## Fase 8b — panel gráfico
+## Fase 8b/8c — panel y HUD (ahora web)
 
-`uv pip install PySide6-Essentials` y, con `voice` corriendo: `python main.py panel`.
-Es un proceso aparte: cerrarlo no afecta al agente, y si el agente se reinicia el panel se reconecta solo.
-Pestañas: Estado (proveedor, razonamiento, RAM/VRAM, último turno, eventos), Historial, Memoria, Herramientas/MCP, Seguridad (auditoría).
+El panel y el HUD de Qt se retiraron (ya no hace falta PySide6; los comandos `panel` y `hud` no existen). Los reemplaza la web local:
+`http://localhost:8765` → pestaña **Panel** (estado, historial, memoria, herramientas/MCP, permisos, auditoría) y `http://localhost:8765/hud`
+(figura de estado + tarjeta de permisos; sirve como ventana chica o PWA). `python main.py events` sigue mostrando los eventos en vivo.
+Una sección `hud:` vieja en `config/ui.yaml` se ignora.
 
-## Fase 8c — HUD flotante
-
-`python main.py hud` (con `voice` corriendo). Círculo animado que cambia de color/animación según el estado
-(escuchando, transcribiendo, pensando, herramienta, hablando, confirmación). Ajustes en `config/ui.yaml` → `hud`.
-Solo lee eventos: no puede mandar órdenes ni confirmar nada, y con `click_through: true` los clics lo atraviesan.
-
-**KDE Wayland:** una app no puede fijar su posición ni forzar "siempre encima"; si el HUD no queda donde querés,
-creá una regla en Preferencias del sistema → Ventanas → Reglas de ventana: coincidencia por título `Piantao HUD`,
-con "Posición" (Forzar), "Mantener por encima" (Forzar: Sí) y "Saltar la barra de tareas" (Sí).
+**Figura de Piantao.** El estado se muestra con una hoja de sprites de 8 poses (`web/src/assets/piantao-sprite.webp`, celdas de 384×512):
+reposo, pensando, hablando, escribiendo, analizando, buscando, explicando y celebrando. El agente publica estados finos según la
+herramienta que usa (`buscando` = web/MCP de navegación; `escribiendo` = crear/modificar archivos, comandos, escritorio; `analizando` = el resto,
+como leer archivos o capturas), `explicando` mientras responde por texto y `celebrando` 3 s al terminar un trabajo con herramientas sin fallos.
+El resplandor de color parpadea según el estado y la misma figura va en el núcleo del holo. Para cambiar las poses, reemplazá el archivo
+manteniendo el orden de la hoja y corré `cd web && npm run build`.
 
 ## Fase 8d — confirmar por voz, permisos en el HUD y portales XDG
 
@@ -241,17 +239,17 @@ El proyecto, el paquete Python (`piantao`), el servicio (`piantao.service`), el 
 palabra de activación (**«piantao»**, con alias típicos de Whisper) usan el nombre nuevo.
 Para migrar una instalación existente: `scripts/migrate_from_poeta.py` (ver su cabecera; `--dry-run` muestra qué cambia).
 
-## Atajo global fiable (KDE) y por qué el HUD a veces solo ofrece teclado
+## Atajo global fiable (KDE) y por qué la confirmación a veces solo ofrece teclado
 
 - `python3 scripts/install_kde_shortcuts.py` crea un atajo global de KDE (por defecto `Ctrl+Alt+Space`) que ejecuta
   `scripts/talk.py`: hablar, o interrumpir si Piantao está respondiendo. No depende del portal XDG. `--stop-key` agrega otro
   atajo solo para callar; `--remove` los quita.
-- Confirmar por voz **no necesita ningún atajo**: Piantao pregunta en voz alta y escucha solo. Si el HUD ofrece solo el
+- Confirmar por voz **no necesita ningún atajo**: Piantao pregunta en voz alta y escucha solo. Si la tarjeta ofrece solo el
   teclado, la tarjeta ahora dice por qué (voz desactivada, pedida tras leer contenido externo, gestos sin `--gestures`...).
 
 ## Panel completo (Fase 8, cierre)
 
-Pestañas nuevas/ampliadas de `python main.py panel`:
+Secciones de la pestaña Panel web (antes, el panel Qt):
 - **Voz y visión:** modo, palabra de activación, STT/TTS, estado de la confirmación por voz, cámara, gestos recientes y un botón «Hablar ahora».
 - **Herramientas → MCP:** *Reiniciar* y *Pausar* un servidor. Reiniciar vuelve a verificar la huella: si el servidor cambió sus herramientas
   queda omitido. **Aprobar** sigue siendo solo por terminal (`python main.py mcp approve <nombre>`); el panel no puede hacerlo.

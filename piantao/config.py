@@ -33,8 +33,9 @@ CONFIG_FILES = (
     "ui",
     "portals",
     "web",
+    "skills",
 )
-OPTIONAL_FILES = {"web"}  # si falta, se usan los valores por defecto (instalaciones anteriores a la v2.0)
+OPTIONAL_FILES = {"web", "skills"}  # si falta, se usan los valores por defecto (instalaciones anteriores a la v2.0)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -175,17 +176,12 @@ def _validate(cfg: dict[str, dict[str, Any]]) -> None:
         WebConfig.from_config(cfg)
     except WebConfigError as exc:
         raise ConfigError(str(exc)) from exc
-    hud = cfg["ui"].get("hud") or {}
-    if hud.get("corner", "bottom-right") not in ("top-left", "top-right", "bottom-left", "bottom-right"):
-        raise ConfigError("ui.yaml: hud.corner debe ser top-left, top-right, bottom-left o bottom-right")
-    for key, lo, hi in (("size", 40, 400), ("margin", 0, 500), ("opacity", 0.2, 1.0)):
-        v = hud.get(key)
-        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi):
-            raise ConfigError(f"ui.yaml: hud.{key} debe estar entre {lo} y {hi}")
-    for key in ("hide_when_idle", "click_through", "always_on_top"):
-        if not isinstance(hud.get(key, False), bool):
-            raise ConfigError(f"ui.yaml: hud.{key} debe ser true o false")
+    from piantao.skills import SkillsConfig, SkillsConfigError
 
+    try:
+        SkillsConfig.from_config(cfg)
+    except SkillsConfigError as exc:
+        raise ConfigError(str(exc)) from exc
     name = (cfg["settings"].get("assistant") or {}).get("name")
     if not isinstance(name, str) or not name.strip():
         raise ConfigError("settings.assistant.name debe ser un texto no vacio.")

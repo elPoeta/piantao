@@ -202,6 +202,7 @@ def test_permission_modal_explicit_phrase_and_deny_default_focus(browser, tmp_pa
         page.fill(".dialog input", "CONFIRMAR")
         allow.click()
         page.wait_for_selector("text=Leer una pagina")
+        page.wait_for_selector("button:focus:has-text('Denegar')", timeout=3000)   # el foco llega despues de montarse: sin esto Esc puede perderse
         page.keyboard.press("Escape")  # Esc = denegar
         page.wait_for_selector(".bubble-assistant:has-text('listo')", timeout=8000)
         assert results == {"explicit": True, "plain": False}
@@ -566,6 +567,10 @@ class BoardServer(ChatServer):
         (ws / "notas.txt").write_text("hola notas", encoding="utf-8")
         self.gw.files = FileBrowser([ws])
         self.gw.handlers.update(self.gw.files.handlers())
+        from piantao.web import OpenContext
+
+        self.ctx = OpenContext(self.gw.files, self.board, None)      # lo mismo que cablea main.py: lo abierto en el holo llega al agente
+        self.gw.handlers.update(self.ctx.handlers())
 
     def add(self, **kw):
         done = threading.Event()
@@ -998,3 +1003,154 @@ def test_hud_view_shows_state_and_answers_a_permission_and_pwa_registers(browser
         assert fut.result(5) is False
         assert hproblems == [] and problems == [], (hproblems, problems)
 
+
+
+def test_piantao_sprite_follows_every_agent_state_in_header_and_hud_and_the_sheet_loads(browser, tmp_path):
+    expected = {"idle": "reposo", "listening": "reposo", "thinking": "pensando", "speaking": "hablando", "writing": "escribiendo",
+                "analyzing": "analizando", "searching": "buscando", "explaining": "explicando", "celebrating": "celebrando", "confirming": "pensando",
+                "algo_nuevo": "reposo"}
+    with PanelServer(tmp_path) as srv:
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        problems = _page_problems(page)
+        sheet = []
+        page.on("response", lambda r: sheet.append(r) if "piantao-sprite" in r.url else None)
+        pair_and_open(page, srv)
+        hud = ctx.new_page()
+        hproblems = _page_problems(hud)
+        hud.goto(srv.gw.url + "/hud")
+        hud.wait_for_selector(".piantao", timeout=8000)
+        for state, pose in expected.items():
+            srv.bus.publish("state", state=state)
+            until(page, f"() => document.querySelector('header .piantao')?.dataset.pose === '{pose}' && document.querySelector('header .state')?.textContent !== ''", 4000)
+            until(hud, f"() => document.querySelector('.piantao')?.dataset.pose === '{pose}'", 4000)
+            assert page.get_attribute("header .piantao", "class").split()[-1] == f"st-{state}"
+        srv.bus.publish("state", state="searching")
+        page.wait_for_selector("header >> text=Buscando", timeout=4000)
+        # la hoja de sprites cargo de verdad (no solo se pidio) y con las 8 celdas esperadas (1536x1024 = 4x2 de 384x512)
+        assert sheet and all(r.status == 200 and r.headers["content-type"].startswith("image/") for r in sheet)
+        dims = page.evaluate("""async () => { const u = getComputedStyle(document.querySelector('header .piantao')).backgroundImage.slice(5, -2);
+            const i = new Image(); i.src = u; await i.decode(); return [i.naturalWidth, i.naturalHeight]; }""")
+        assert dims == [1536, 1024]
+        assert page.evaluate("() => getComputedStyle(document.querySelector('header .piantao')).backgroundSize") == "400% 200%"
+        assert problems == [] and hproblems == [], (problems, hproblems)
+
+
+def test_holo_core_shows_the_pose_of_the_current_state(browser, tmp_path):
+    with PanelServer(tmp_path) as srv:
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = _page_problems(page)
+        pair_and_open(page, srv)
+        open_holo(page, srv)
+        ring = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y, r: window.__holo.ring.r})")
+        clip = {"x": ring["x"] - ring["r"], "y": ring["y"] - ring["r"] + 56, "width": 2 * ring["r"], "height": 2 * ring["r"]}  # +56: la barra superior
+        shots = {}
+        for st in ("idle", "searching", "celebrating", "idle"):
+            srv.bus.publish("state", state=st)
+            page.wait_for_timeout(500)
+            shots.setdefault(st, []).append(page.screenshot(clip=clip))
+        assert len({shots[k][0] for k in ('idle', 'searching', 'celebrating')}) == 3
+        # dentro del nucleo hay imagen de verdad: la bufanda roja de Piantao (el brillo del anillo nunca es rojo intenso)
+        from io import BytesIO
+        from PIL import Image
+        for st in ("idle", "searching", "celebrating"):
+            im = Image.open(BytesIO(shots[st][0])).convert("RGB")
+            red = sum(1 for x in range(im.width) for y in range(im.height) if (lambda p: p[0] > 130 and p[1] < 70 and p[2] < 70)(im.getpixel((x, y))))
+            assert red > 40, (st, red)
+        assert [p for p in problems if "GL Driver Message" not in p] == [], problems   # avisos de rendimiento de WebGL al capturar pantalla
+
+
+def _open_informe_window(page):
+    ring0 = page.evaluate("() => ({x: window.__holo.ring.x, y: window.__holo.ring.y})")
+    page.mouse.move(ring0["x"], ring0["y"]); page.mouse.down()          # el nucleo se aparta para que las burbujas no tapen la lista
+    for i in range(1, 16):
+        page.mouse.move(ring0["x"] + i * 10, ring0["y"] + i * 12); page.wait_for_timeout(16)
+    page.mouse.up(); page.wait_for_timeout(200)
+    open_explorer_with_core(page)
+    click_row(page, 0)                                                # docs/
+    until(page, "() => window.__holo.cards.get('files-list').rows.some(r => r.id === 'up')", 4000)
+    click_row(page, 1)                                                # informe.md
+    until(page, "() => [...window.__holo.cards.keys()].some(k => k.startsWith('win-file-'))", 4000)
+    return [k for k in card_ids(page) if k.startswith("win-file-")][0]
+
+
+def test_holo_open_document_is_visible_to_the_agent_and_the_answer_becomes_a_movable_closable_card(browser, tmp_path):
+    seen = []
+
+    async def script(srv, text):
+        block = srv.ctx.block()
+        seen.append(block)
+        yield srv.AgentEvent("text", text="Resumen: " + ("el informe habla de linea dos" if block and "linea dos" in block else "NO TENGO ACCESO"))
+
+    with BoardServer(tmp_path, script) as srv:
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        problems = open_holo(page, srv)
+        wid = _open_informe_window(page)
+        for _ in range(50):                                          # el cliente avisa que archivo esta abierto
+            if srv.ctx.items:
+                break
+            page.wait_for_timeout(100)
+        assert [i["name"] for i in srv.ctx.items] == ["informe.md"] and "linea dos" in srv.ctx.items[0]["text"]
+        page.fill(".holo-input", "resumi este archivo")
+        page.keyboard.press("Enter")
+        for _ in range(80):                                          # al terminar el turno la respuesta pasa a ser una tarjeta del tablero
+            if srv.board.cards:
+                break
+            page.wait_for_timeout(100)
+        (card,) = srv.board.cards.values()
+        assert "linea dos" in card["text"] and "NO TENGO ACCESO" not in card["text"]
+        assert seen and "informe.md" in seen[0] and "Informe <i>final</i>" in seen[0]
+        cid = card["id"]
+        until(page, f"() => window.__holo.cards.has('{cid}')", 4000)
+        assert page.locator(".holo-caption").count() == 0            # ya no es un cartel fijo
+        # se mueve (arrastrar con el raton)...
+        page.wait_for_timeout(400)
+        c = card_center(page, cid)
+        page.mouse.move(c["x"] - 20, c["y"] + 10); page.mouse.down()
+        for i in range(1, 21):
+            page.mouse.move(c["x"] - 20 + i * 12, c["y"] + 10 + i * 6); page.wait_for_timeout(16)
+        page.mouse.up(); page.wait_for_timeout(300)
+        c2 = card_center(page, cid)
+        assert abs(c2["x"] - c["x"]) > 100 or abs(c2["y"] - c["y"]) > 60
+        # ...y se quita (desde la lista de tarjetas) y el servidor la olvida
+        page.click(".holo-list summary >> nth=0")
+        page.click(".holo-list li:has-text('Resumen') button:text-is('Cerrar')")
+        for _ in range(50):
+            if not srv.board.cards:
+                break
+            page.wait_for_timeout(100)
+        assert srv.board.cards == {}
+        # cerrar la ventana del archivo: el agente deja de verlo
+        page.click(".holo-list li:has-text('informe.md') button:text-is('Cerrar')")
+        until(page, f"() => !window.__holo.cards.has('{wid}')", 4000)
+        for _ in range(50):
+            if not srv.ctx.items:
+                break
+            page.wait_for_timeout(100)
+        assert srv.ctx.items == [] and srv.ctx.block() is None
+        assert problems == [], problems
+
+
+def test_holo_hold_space_to_talk_works_even_with_a_document_window_open(mic_browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="ok")
+
+    with VoiceServer(tmp_path, script, ["hola desde el holo"]) as srv:
+        page = mic_browser.new_context(permissions=["microphone"], viewport={"width": 1280, "height": 720}).new_page()
+        problems = open_holo(page, srv)
+        page.wait_for_selector("button:has-text('Micrófono')", timeout=8000)
+        page.click("button:has-text('Micrófono')")                    # modo por defecto: mantener para hablar
+        page.wait_for_selector("button:has-text('Apagar mic')", timeout=10000)
+        assert "barra espaciadora" in page.inner_text(".holo-help")
+        page.wait_for_timeout(2500)                                   # sin pulsar no sale audio
+        assert srv.stt_calls == []
+        page.keyboard.down("Space")
+        page.wait_for_timeout(2600)                                   # cubre el tramo con voz del archivo falso
+        page.keyboard.up("Space")
+        for _ in range(100):
+            if srv.stt_calls:
+                break
+            page.wait_for_timeout(100)
+        assert len(srv.stt_calls) == 1
+        assert page.locator("button:has-text('Apagar mic')").count() == 1      # el espacio no accionó el boton enfocado: el mic sigue encendido
+        assert [p for p in problems if "GL Driver" not in p] == [], problems
