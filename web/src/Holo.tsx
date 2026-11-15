@@ -6,8 +6,7 @@ import { IconKind, ListRowSpec, renderCard, renderList } from "./holo-cards";
 import { DocView, WIN_H, WIN_TITLE, WIN_W } from "./holo-doc";
 import { HoloScene } from "./holo-scene";
 import { VisionClient } from "./vision";
-import type { VisionUi } from "./VisionBar";
-import type { VoiceUi } from "./VoiceBar";
+import type { VisionUi, VoiceUi } from "./Dock";
 
 export interface BoardCard { id: string; title: string; text: string; image: string | null; origin: string; ts: number }
 export interface Doc { title: string; text: string; image: string | null; origin: string; md: boolean }

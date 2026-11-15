@@ -430,7 +430,7 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
     gw.board = None
     gw.files = None
     if chat is not None:
-        from piantao.web import Board, FileBrowser, OpenContext, register_board
+        from piantao.web import Attachments, Board, FileBrowser, OpenContext, register_board
 
         gw.files = FileBrowser.from_config(cfg, PROJECT_ROOT)
         gw.handlers.update(gw.files.handlers())
@@ -441,6 +441,11 @@ async def start_web(cfg: dict, bus: EventBus, ui_server, agent: AgentCore | None
         ctx = OpenContext(gw.files, board, getattr(agent, "tools", None))   # lo que el usuario tiene abierto en el holo, visible para el agente
         gw.handlers.update(ctx.handlers())
         agent.system_extras.append(ctx.block)
+        att = Attachments(getattr(agent, "tools", None), lambda items: gw.broadcast({"t": "attachments", "items": items}))
+        gw.attachments = att
+        gw.handlers.update(att.handlers())
+        agent.system_extras.append(att.block)
+        chat.reset_hooks.append(att.clear)   # otra conversacion = sin los adjuntos de la anterior
         registry = getattr(agent, "tools", None)
         if registry is not None:
             register_board(registry, board)  # el modelo puede mostrar tarjetas; son solo visuales (nivel 1)

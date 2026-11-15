@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import WSMsgType, web
 
 from ..ipc.protocol import MAX_LINE, VERSION, ProtocolError, decode, encode
+from .attachments import MAX_UPLOAD
 from .auth import PairingManager, SessionStore
 from .config import WebConfig
 
@@ -56,6 +57,7 @@ class WebGateway:
         self.voice: Any = None
         self.vision: Any = None
         self.board: Any = None
+        self.attachments: Any = None  # Attachments (archivos adjuntos a la conversacion)
         self.files: Any = None  # FileBrowser (solo lectura, mismas carpetas que el agente)
         self.hand_model: Path | None = None  # modelo de manos de MediaPipe (se sirve desde models/, no va en el parche)
         self.ctx_handlers: dict[str, Callable[[dict[str, Any], Any], Awaitable[Any]]] = {}  # reciben tambien la conexion
@@ -76,7 +78,7 @@ class WebGateway:
         app.add_routes([
             web.get("/", self._index), web.get("/api/session", self._session), web.post("/api/pair", self._pair),
             web.post("/api/logout", self._logout), web.get("/ws", self._ws), web.get("/vision/hand_landmarker.task", self._hand_model),
-            web.get("/media/{name}", self._media), web.get("/api/file", self._file),
+            web.get("/media/{name}", self._media), web.get("/api/file", self._file), web.post("/api/upload", self._upload),
             web.get("/hud", self._index),  # misma aplicacion, vista HUD (la distingue el frontend por la ruta)
             *(web.get(f"/{n}", self._shell_file) for n in SHELL_FILES),
         ])
@@ -189,6 +191,27 @@ class WebGateway:
         except ValueError:
             return web.Response(status=404, text="imagen no disponible")
         return web.FileResponse(path, headers={"Content-Type": mime, "Cache-Control": "private, max-age=60"})
+
+    async def _upload(self, request: web.Request) -> web.StreamResponse:
+        """Adjunta un archivo a la conversacion (cuerpo = el archivo en crudo; el nombre va en ?name=). Solo con sesion y con tope de tamaño."""
+        if self._sid(request) is None:
+            return web.json_response({"ok": False, "error": "sin sesion"}, status=401)
+        att = getattr(self, "attachments", None)
+        if att is None:
+            return web.json_response({"ok": False, "error": "los adjuntos no estan disponibles"}, status=404)
+        if request.content_length is not None and request.content_length > MAX_UPLOAD:
+            return web.json_response({"ok": False, "error": f"el archivo supera {MAX_UPLOAD // (1024 * 1024)} MiB"}, status=413)
+        data = bytearray()
+        async for chunk in request.content.iter_chunked(64 * 1024):
+            data += chunk
+            if len(data) > MAX_UPLOAD:
+                return web.json_response({"ok": False, "error": f"el archivo supera {MAX_UPLOAD // (1024 * 1024)} MiB"}, status=413)
+        try:
+            info = att.add(request.query.get("name", ""), bytes(data))
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        self.audit("web_upload", name=info["name"], kind=info["kind"], size=info["size"])
+        return web.json_response({"ok": True, "attachment": info})
 
     async def _session(self, request: web.Request) -> web.Response:
         return web.json_response({"paired": self._sid(request) is not None, "v": VERSION})

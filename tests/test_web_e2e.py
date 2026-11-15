@@ -222,9 +222,9 @@ def test_stop_button_interrupts_turn(browser, tmp_path):
         page.fill("textarea", "largo")
         page.keyboard.press("Enter")
         page.wait_for_selector("text=empiezo")
-        page.click("text=Detener")
+        page.click("role=button[name='Detener']")
         page.wait_for_selector("text=(interrumpido)")
-        assert page.locator("button", has_text="Enviar").is_visible()
+        assert page.locator("role=button[name='Enviar']").is_visible()
 
 
 def test_skills_page_lists_reviews_and_cannot_approve(browser, tmp_path):
@@ -362,16 +362,18 @@ def test_voice_always_mode_hears_fake_mic_and_plays_reply(mic_browser, tmp_path)
         page.on("pageerror", lambda e: problems.append(str(e)))
         page.on("console", lambda m: problems.append(m.text) if m.type == "error" else None)
         pair_and_open(page, srv)
-        page.wait_for_selector(".voicebar")
-        page.select_option(".voicebar select", "always")
-        page.click("text=Activar micrófono")
-        page.wait_for_selector("text=Apagar micrófono", timeout=10000)
+        page.wait_for_selector(".composer")
+        page.click("role=button[name='Opciones de voz y cámara']")
+        page.select_option(".composer select", "always")
+        page.click("role=button[name='Opciones de voz y cámara']")
+        page.click("role=button[name='Activar micrófono']")
+        page.wait_for_selector("role=button[name='Apagar micrófono']", timeout=10000)
         page.wait_for_selector("text=hola desde el micrófono", timeout=15000)  # «Entendí: ...» y la burbuja del usuario
         page.wait_for_selector(".bubble-assistant:has-text('Escuché')", timeout=10000)
         page.wait_for_selector(".vstate-speaking", timeout=10000)  # llego audio y se esta reproduciendo
         assert srv.stt_calls and srv.stt_calls[0] > 16000 // 4
-        page.click("text=Apagar micrófono")
-        page.wait_for_selector("text=Activar micrófono")
+        page.click("role=button[name='Apagar micrófono']")
+        page.wait_for_selector("role=button[name='Activar micrófono']")
         assert not srv.voice.active
         assert problems == [], problems  # incluye errores de JavaScript al decodificar el audio recibido
 
@@ -384,9 +386,9 @@ def test_voice_ptt_only_sends_audio_while_pressed(mic_browser, tmp_path):
         ctx = mic_browser.new_context(permissions=["microphone"])
         page = ctx.new_page()
         pair_and_open(page, srv)
-        page.wait_for_selector(".voicebar")
-        page.click("text=Activar micrófono")
-        page.wait_for_selector("text=Mantener para hablar", timeout=10000)
+        page.wait_for_selector(".composer")
+        page.click("role=button[name='Activar micrófono']")
+        page.wait_for_selector("role=button[name='Hablar']", timeout=10000)
         page.wait_for_timeout(2500)  # sin pulsar no sale audio
         assert srv.stt_calls == []
         page.keyboard.down("Space")
@@ -404,9 +406,9 @@ def test_voice_mic_permission_denied_shows_error_and_keeps_server_clean(browser,
         ctx = browser.new_context()  # sin permiso de microfono
         page = ctx.new_page()
         pair_and_open(page, srv)
-        page.wait_for_selector(".voicebar")
-        page.click("text=Activar micrófono")
-        page.wait_for_selector("text=Activar micrófono", timeout=8000)
+        page.wait_for_selector(".composer")
+        page.click("role=button[name='Activar micrófono']")
+        page.wait_for_selector("role=button[name='Activar micrófono']", timeout=8000)
         assert not srv.voice.active
 
 
@@ -440,10 +442,10 @@ def test_vision_page_offers_camera_and_reports_missing_model_clearly(mic_browser
         problems = []
         page.on("pageerror", lambda e: problems.append(str(e)))
         pair_and_open(page, srv)
-        page.wait_for_selector(".visionbar")
-        page.click("text=Activar cámara y gestos")
+        page.wait_for_selector(".composer")
+        page.click("role=button[name='Activar cámara y gestos']")
         page.wait_for_selector("[role=alert]:has-text('fetch_models')", timeout=20000)  # el modelo no esta: mensaje accionable
-        page.wait_for_selector("text=Activar cámara y gestos")
+        page.wait_for_selector("role=button[name='Activar cámara y gestos']")
         assert not srv.vision.active and not srv.hub.active
         assert problems == [], problems
 
@@ -463,7 +465,7 @@ def test_vision_wasm_and_assets_load_under_strict_csp(mic_browser, tmp_path):
         requested = []
         page.on("requestfinished", lambda r: requested.append(r.url))
         pair_and_open(page, srv)
-        page.click("text=Activar cámara y gestos")
+        page.click("role=button[name='Activar cámara y gestos']")
         page.wait_for_selector("[role=alert]", timeout=30000)  # modelo invalido: falla DESPUES de cargar el runtime
         assert any(u.endswith("vision_wasm_internal.wasm") for u in requested), requested
         assert any(u.endswith("hand_landmarker.task") for u in requested)
@@ -1154,3 +1156,110 @@ def test_holo_hold_space_to_talk_works_even_with_a_document_window_open(mic_brow
         assert len(srv.stt_calls) == 1
         assert page.locator("button:has-text('Apagar mic')").count() == 1      # el espacio no accionó el boton enfocado: el mic sigue encendido
         assert [p for p in problems if "GL Driver" not in p] == [], problems
+
+
+def test_chat_dock_is_compact_options_are_folded_and_escape_closes_them(mic_browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="x")
+
+    with VisionServer(tmp_path, script, model=tmp_path / "no-existe.task") as srv:
+        page = mic_browser.new_context(permissions=["camera"], viewport={"width": 1000, "height": 700}).new_page()
+        pair_and_open(page, srv)
+        page.wait_for_selector(".composer")
+        # limpio por defecto: iconos + estado, nada de selectores, casillas ni textos de ayuda a la vista
+        assert page.locator(".composer select:visible, .composer input[type=checkbox]:visible").count() == 0
+        assert page.locator(".dock-options").is_hidden()
+        ta, acts = page.locator(".composer textarea").bounding_box(), page.locator(".composer-actions").bounding_box()
+        assert acts["x"] >= ta["x"] + ta["width"] - 1 and acts["width"] < 150          # a la derecha del cuadro de texto
+        btns = page.locator(".composer-actions button:visible")
+        assert btns.count() == 5                                                       # enviar, nueva, adjuntar, camara, opciones (este servidor no tiene voz)
+        assert all(btns.nth(i).inner_text().strip() == "" for i in range(5))           # todos con icono, sin texto
+        for name in ("Enviar", "Nueva conversación", "Adjuntar archivos", "Activar cámara y gestos", "Opciones de voz y cámara"):
+            assert page.locator(f"role=button[name='{name}']").count() == 1
+        before = page.locator(".chat").bounding_box()["height"]
+        page.click("role=button[name='Opciones de voz y cámara']")
+        page.wait_for_selector(".dock-options", state="visible")
+        assert page.get_attribute("role=button[name='Opciones de voz y cámara']", "aria-expanded") == "true"
+        assert "La cámara solo se abre cuando la activás" in page.inner_text(".dock-options")
+        assert page.locator(".chat").bounding_box()["height"] == before        # el panel flota: no empuja ni encoge el chat
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".dock-options", state="hidden")
+        assert page.get_attribute("role=button[name='Opciones de voz y cámara']", "aria-expanded") == "false"
+
+
+class AttachServer(ChatServer):
+    """ChatServer con adjuntos reales (los mismos objetos que arma main.py) y un agente que ve el bloque de sistema."""
+
+    def __init__(self, tmp_path, script):
+        from piantao.web import Attachments
+        super().__init__(tmp_path, script)
+        self.tools = self.NS(tainted=False)
+        self.att = Attachments(self.tools, lambda items: self.gw.broadcast({"t": "attachments", "items": items}))
+        self.gw.attachments = self.att
+        self.gw.handlers.update(self.att.handlers())
+        self.chat.reset_hooks.append(self.att.clear)
+
+
+def test_chat_attach_files_chips_remove_errors_and_new_conversation_clears(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="ok")
+
+    with AttachServer(tmp_path, script) as srv:
+        page = browser.new_page()
+        problems = []
+        page.on("pageerror", lambda e: problems.append(str(e)))
+        pair_and_open(page, srv)
+        page.wait_for_selector(".composer")
+        assert page.locator(".chips").count() == 0
+        page.set_input_files("[data-testid=file-input]", [
+            {"name": "notas.txt", "mimeType": "text/plain", "buffer": "clave secreta: ZORRO-42\n".encode()},
+            {"name": "foto.png", "mimeType": "image/png", "buffer": b"\x89PNG\r\n\x1a\n" + b"0" * 50}])
+        page.wait_for_selector(".chip:has-text('notas.txt')")
+        page.wait_for_selector(".chip:has-text('foto.png')")
+        assert [a["name"] for a in srv.att.list()] == ["notas.txt", "foto.png"]
+        assert "ZORRO-42" in srv.att.block() and srv.tools.tainted is True        # el agente lo ve, y se trata como contenido externo
+        # un archivo binario no soportado se rechaza con aviso y no queda adjunto
+        page.set_input_files("[data-testid=file-input]", [{"name": "raro.bin", "mimeType": "application/octet-stream", "buffer": b"\x00\x01\x02" * 100}])
+        page.wait_for_selector("text=no soportado")
+        assert page.locator(".chip").count() == 2
+        # quitar una ficha
+        page.click("role=button[name='Quitar notas.txt']")
+        page.wait_for_selector(".chip:has-text('notas.txt')", state="detached")
+        assert [a["name"] for a in srv.att.list()] == ["foto.png"]
+        # recargar: la lista vuelve del servidor
+        page.reload()
+        page.wait_for_selector("text=conectado", timeout=8000)
+        page.wait_for_selector(".chip:has-text('foto.png')")
+        # nueva conversacion limpia los adjuntos
+        page.fill(".composer textarea", "hola")
+        page.click("role=button[name='Enviar']")
+        page.wait_for_selector(".bubble-assistant:has-text('ok')")
+        page.click("role=button[name='Nueva conversación']")
+        page.wait_for_selector(".chip", state="detached")
+        assert srv.att.list() == []
+        assert problems == [], problems
+
+
+def test_chat_attach_by_drag_and_drop_and_paste(browser, tmp_path):
+    async def script(srv, text):
+        yield srv.AgentEvent("text", text="ok")
+
+    with AttachServer(tmp_path, script) as srv:
+        page = browser.new_page()
+        pair_and_open(page, srv)
+        page.wait_for_selector(".composer")
+        page.evaluate("""() => {
+          const dt = new DataTransfer(); dt.items.add(new File(["hola drop"], "drop.md", {type: "text/markdown"}));
+          window.__dt = dt;
+          document.querySelector('.chat').dispatchEvent(new DragEvent('dragover', {dataTransfer: dt, bubbles: true, cancelable: true}));
+        }""")
+        page.wait_for_selector(".chat.dropping")
+        page.evaluate("""() => document.querySelector('.chat').dispatchEvent(new DragEvent('drop', {dataTransfer: window.__dt, bubbles: true, cancelable: true}))""")
+        page.wait_for_selector(".chip:has-text('drop.md')")
+        assert page.locator(".chat.dropping").count() == 0
+        page.evaluate("""() => {
+          const dt = new DataTransfer(); dt.items.add(new File(["pegado"], "pegado.txt", {type: "text/plain"}));
+          document.querySelector('.composer textarea').dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+        }""")
+        page.wait_for_selector(".chip:has-text('pegado.txt')")
+        assert sorted(a["name"] for a in srv.att.list()) == ["drop.md", "pegado.txt"]

@@ -1,4 +1,5 @@
-import { ComponentChildren } from "preact";
+import { DockSlots, SendIcon, StopIcon, NewIcon, ClipIcon } from "./Dock";
+import type { Attachment } from "./api";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Markdown } from "./markdown";
 
@@ -62,11 +63,16 @@ function Bubble({ m, onPin }: { m: Msg; onPin?: (text: string) => void }) {
   );
 }
 
-export function Chat({ msgs, busy, connected, onSend, onStop, onNew, onPin, extra }:
-  { msgs: Msg[]; busy: boolean; connected: boolean; onSend: (t: string) => void; onStop: () => void; onNew: () => void; onPin?: (text: string) => void; extra?: ComponentChildren }) {
+const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+export function Chat({ msgs, busy, connected, onSend, onStop, onNew, onPin, dock, attachments = [], uploading = [], onAttach, onUnattach }:
+  { attachments?: Attachment[]; uploading?: string[]; onAttach?: (files: File[]) => void; onUnattach?: (id: string) => void; msgs: Msg[]; busy: boolean; connected: boolean; onSend: (t: string) => void; onStop: () => void; onNew: () => void; onPin?: (text: string) => void; dock?: DockSlots }) {
   const [text, setText] = useState("");
   const list = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const picker = useRef<HTMLInputElement>(null);
+  const [dropping, setDropping] = useState(false);
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
 
   useEffect(() => { const el = list.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [msgs]);
 
@@ -77,22 +83,42 @@ export function Chat({ msgs, busy, connected, onSend, onStop, onNew, onPin, extr
   }
 
   return (
-    <section class="chat">
+    <section class={dropping ? "chat dropping" : "chat"}
+      onDragOver={(e) => { if (onAttach && hasFiles(e)) { e.preventDefault(); setDropping(true); } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false); }}
+      onDrop={(e) => { if (onAttach && hasFiles(e)) { e.preventDefault(); setDropping(false); onAttach([...e.dataTransfer!.files]); } }}>
       <div class="messages" ref={list} aria-live="polite"
         onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>
         {msgs.length === 0 && <p class="muted center">Escribile algo a Piantao.</p>}
         {msgs.map((m) => <Bubble key={m.id} m={m} onPin={onPin} />)}
       </div>
-      {extra}
+      {(attachments.length > 0 || uploading.length > 0) && (
+        <ul class="chips" aria-label="Archivos adjuntos">
+          {attachments.map((a) => (
+            <li key={a.id} class="chip" title={`${a.name} · ${a.kind === "image" ? "imagen (Piantao solo ve el nombre)" : a.chars + " caracteres de texto"}`}>
+              <span class="chip-name">{a.name}</span><span class="chip-size">{fmtSize(a.size)}</span>
+              <button type="button" class="chip-x" aria-label={`Quitar ${a.name}`} onClick={() => onUnattach?.(a.id)}>×</button>
+            </li>))}
+          {uploading.map((n, i) => <li key={`up${i}`} class="chip chip-up"><span class="chip-name">{n}</span><span class="chip-size">subiendo...</span></li>)}
+        </ul>
+      )}
+      {dock?.status}
       <form class="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
-        <textarea value={text} rows={2} maxLength={8000} placeholder={connected ? "Mensaje (Enter envia, Shift+Enter salto de linea)" : "Sin conexion..."}
+        <textarea value={text} rows={3} maxLength={8000} placeholder={connected ? "Mensaje (Enter envia, Shift+Enter salto de linea)" : "Sin conexion..."}
           aria-label="Mensaje" onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+          onPaste={(e) => { const f = [...(e.clipboardData?.files ?? [])]; if (f.length && onAttach) { e.preventDefault(); onAttach(f); } }}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } }} />
         <div class="composer-actions">
-          {busy ? <button type="button" class="stop" onClick={onStop}>Detener</button>
-            : <button type="submit" disabled={!text.trim() || !connected}>Enviar</button>}
-          <button type="button" class="ghost" disabled={busy || msgs.length === 0} onClick={onNew}>Nueva conversacion</button>
+          {busy ? <button type="button" class="icon-btn stop" aria-label="Detener" title="Detener" onClick={onStop}><StopIcon /></button>
+            : <button type="submit" class="icon-btn send" aria-label="Enviar" title="Enviar (Enter)" disabled={!text.trim() || !connected}><SendIcon /></button>}
+          <button type="button" class="icon-btn" aria-label="Nueva conversación" title="Nueva conversación" disabled={busy || msgs.length === 0} onClick={onNew}><NewIcon /></button>
+          {onAttach && <>
+            <input ref={picker} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="file-input" onChange={(e) => { const el = e.currentTarget; onAttach([...(el.files ?? [])]); el.value = ""; }} />
+            <button type="button" class="icon-btn" aria-label="Adjuntar archivos" title="Adjuntar archivos (también podés arrastrarlos o pegarlos)" onClick={() => picker.current?.click()}><ClipIcon /></button>
+          </>}
+          {dock?.buttons}
         </div>
+        {dock?.panel}
       </form>
     </section>
   );

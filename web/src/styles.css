@@ -72,9 +72,9 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .tool summary, .reasoning summary { cursor: pointer; color: var(--muted); }
 .tool-ok summary b { color: var(--ok); } .tool-denied summary b, .tool-err summary b { color: var(--bad); } .tool-run summary b { color: var(--warn); }
 .reasoning { color: var(--muted); }
-.composer { display: flex; gap: 0.6rem; margin-top: 0.75rem; align-items: flex-end; }
+.composer { position: relative; display: flex; gap: 0.6rem; margin-top: 0.5rem; align-items: stretch; }
 .composer textarea { flex: 1; resize: vertical; min-height: 3rem; max-height: 12rem; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; font: inherit; }
-.composer-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+.composer-actions { display: grid; grid-template-columns: repeat(3, 2.4rem); grid-auto-rows: 2.4rem; gap: 0.4rem; align-content: end; }
 button.stop { background: var(--bad); color: #fff; }
 .small { font-size: 0.85rem; }
 
@@ -100,10 +100,9 @@ button.stop { background: var(--bad); color: #fff; }
 code { font-family: ui-monospace, monospace; background: #0b1118; border-radius: 4px; padding: 0.05rem 0.3rem; }
 
 /* voz */
-.voicebar { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; margin-top: 0.75rem; background: var(--panel); }
 .voice-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.7rem; }
 .voice-row + .voice-row { margin-top: 0.4rem; }
-.voicebar select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.4rem; font: inherit; }
+.dock-options select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.4rem; font: inherit; }
 button.mic-on { background: var(--bad); color: #fff; }
 button.ptt { background: var(--ok); color: #04121a; touch-action: none; user-select: none; }
 .check { display: flex; align-items: center; gap: 0.3rem; color: var(--muted); }
@@ -111,7 +110,6 @@ button.ptt { background: var(--ok); color: #04121a; touch-action: none; user-sel
 .vstate { font-weight: 600; } .vstate-listening { color: var(--ok); } .vstate-speaking { color: #b388ff; } .vstate-transcribing, .vstate-loading { color: var(--warn); }
 
 /* camara y gestos */
-.visionbar { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.8rem; margin-top: 0.75rem; background: var(--panel); }
 .camview { position: fixed; right: 1rem; bottom: 1rem; width: 14rem; aspect-ratio: 4 / 3; border: 1px solid var(--accent); border-radius: 10px; overflow: hidden; background: #000; z-index: 5; }
 .camview-hidden { width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; }
 .camvideo, .camcanvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
@@ -167,3 +165,34 @@ html.hud-page, html.hud-page body { background: transparent; }
 
 /* PWA instalada: sin barra del navegador */
 @media (display-mode: standalone) { .shell { padding-top: 0.5rem; } }
+
+/* dock del chat: iconos + una linea de estado; las opciones quedan plegadas */
+.composer-status { display: flex; align-items: center; gap: 0.6rem; min-height: 1.4rem; margin-top: 0.4rem; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 2.4rem; height: 2.4rem; padding: 0; border-radius: 999px; background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.icon-btn.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+.icon-btn.on-soft { color: var(--accent); border-color: var(--accent); }
+.dock-status { flex: 0 1 auto; min-width: 0; color: var(--muted); font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-status.vstate-listening { color: var(--ok); } .dock-status.vstate-speaking { color: #b388ff; } .dock-status.vstate-transcribing, .dock-status.vstate-loading { color: var(--warn); }
+.composer-status .level { width: 5rem; height: 0.6rem; }
+.dock-options { position: absolute; right: 0; bottom: calc(100% + 0.4rem); z-index: 6; width: min(26rem, 100%); max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 0.7rem 0.9rem; box-shadow: 0 10px 30px #0008; display: flex; flex-direction: column; gap: 0.6rem; }
+.dock-options[hidden] { display: none; }
+.dock-options fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.dock-options legend { font-weight: 600; margin-bottom: 0.3rem; padding: 0; }
+.dock-options p { margin: 0; }
+.icon-btn.send { background: var(--accent); color: #04121a; border-color: var(--accent); }
+.icon-btn.send:disabled { background: transparent; color: var(--muted); border-color: var(--line); }
+.icon-btn.stop { background: var(--bad); border-color: var(--bad); color: #fff; }
+.icon-btn.ptt { background: var(--ok); border-color: var(--ok); color: #04121a; touch-action: none; user-select: none; }
+.dock-options { right: 0; bottom: calc(100% + 0.4rem); }
+
+/* adjuntos */
+.chips { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 0; padding: 0; }
+.chip { display: inline-flex; align-items: center; gap: 0.4rem; max-width: 16rem; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 0.15rem 0.3rem 0.15rem 0.75rem; font-size: 0.85rem; }
+.chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-size { color: var(--muted); font-size: 0.75rem; flex: none; }
+.chip-x { width: 1.4rem; height: 1.4rem; padding: 0; border-radius: 999px; background: transparent; color: var(--muted); border: 0; line-height: 1; font-size: 1.1rem; }
+.chip-x:hover { color: var(--bad); }
+.chip-up { opacity: 0.7; padding-right: 0.75rem; }
+.chat.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: 12px; }

@@ -20,6 +20,21 @@ export async function pair(code: string): Promise<{ ok: boolean; error?: string 
   } catch { return { ok: false, error: "no se pudo conectar con Piantao" }; }
 }
 
+export interface Attachment { id: string; name: string; kind: string; size: number; chars: number }
+export const MAX_UPLOAD = 10 * 1024 * 1024;
+/** Sube un archivo para adjuntarlo a la conversacion (el servidor extrae el texto; el archivo no se guarda). */
+export async function uploadAttachment(file: File): Promise<Attachment> {
+  if (file.size > MAX_UPLOAD) throw new Error(`${file.name}: supera ${MAX_UPLOAD / (1024 * 1024)} MiB`);
+  let r: Response;
+  try {
+    r = await fetch(`/api/upload?name=${encodeURIComponent(file.name || "adjunto")}`, { method: "POST", headers: { "X-Piantao": "1", "Content-Type": "application/octet-stream" }, body: file, credentials: "same-origin" });
+  } catch { throw new Error("sin conexion con Piantao"); }
+  let j: any = null;
+  try { j = await r.json(); } catch { /* respuesta sin JSON */ }
+  if (!r.ok || !j?.ok) throw new Error(`${file.name}: ${j?.error ?? "no se pudo adjuntar"}`);
+  return j.attachment as Attachment;
+}
+
 export async function logout(): Promise<void> {
   try { await fetch("/api/logout", { method: "POST", headers: HDR, credentials: "same-origin" }); } catch { /* sin conexion */ }
 }
@@ -37,6 +52,7 @@ export class Link {
   onBinary: (d: ArrayBuffer) => void = () => {};
   onChat: (m: Record<string, any>) => void = () => {};
   onBoard: (m: Record<string, any>) => void = () => {};
+  onAttachments: (items: Attachment[]) => void = () => {};
   onConfirm: (m: Record<string, any>) => void = () => {};
   onStatus: (s: "connecting" | "open" | "closed" | "unauthorized") => void = () => {};
 
@@ -55,6 +71,7 @@ export class Link {
       else if (msg.t === "event") this.onEvent({ kind: msg.kind, data: msg.data, ts: msg.ts });
       else if (msg.t === "chat") this.onChat(msg);
       else if (msg.t === "board") this.onBoard(msg);
+      else if (msg.t === "attachments") this.onAttachments(msg.items as Attachment[]);
       else if (msg.t === "voice") this.onVoice(msg);
       else if (msg.t === "vision") this.onVision(msg);
       else if (msg.t === "confirm" || msg.t === "confirm_done") this.onConfirm(msg);

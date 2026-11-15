@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { Link, PiantaoEvent, Snapshot, logout, sessionPaired } from "./api";
+import { Link, PiantaoEvent, Snapshot, logout, sessionPaired, Attachment, uploadAttachment } from "./api";
 import { Chat, Msg, applyChat } from "./Chat";
 import { ConfirmModal, ConfirmReq } from "./Confirm";
 import { Pair } from "./Pair";
-import { VoiceBar, VoiceUi } from "./VoiceBar";
+import { Dock, VoiceUi, VisionUi } from "./Dock";
 import { VoiceClient, VoiceMode } from "./voice";
 import { VisionClient } from "./vision";
-import { VisionBar, VisionUi } from "./VisionBar";
 import { Skills } from "./Skills";
 import { Panel } from "./Panel";
 import { Sprite } from "./Sprite";
@@ -34,6 +33,8 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   const [confirms, setConfirms] = useState<ConfirmReq[]>([]);
   const [notice, setNotice] = useState("");
   const [board, setBoard] = useState<BoardCard[]>([]);
+  const [atts, setAtts] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState<string[]>([]);
   const [HoloView, setHoloView] = useState<typeof HoloT | null>(null);
   // three.js pesa: se descarga solo al abrir la pestaña Holo
   useEffect(() => { if (tab === "holo" && !HoloView) void import("./Holo").then((m) => setHoloView(() => m.Holo)); }, [tab]);
@@ -75,6 +76,7 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
     l.onVoice = (m) => vc.handle(m);
     l.onBinary = (d) => vc.handleBinary(d);
     l.onSnapshot = setSnap;
+    l.onAttachments = setAtts;
     l.onBoard = (m) => {
       if (m.ev === "add") setBoard((b) => (b.some((c) => c.id === m.card.id) ? b : [...b, m.card as BoardCard]));
       else if (m.ev === "remove") setBoard((b) => b.filter((c) => c.id !== m.id));
@@ -84,6 +86,7 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
       setStatus(s);
       if (s === "open") {
         void loadHistory(l);
+        l.command("attachment_list").then((a) => setAtts(a as Attachment[])).catch(() => setAtts([]));
         l.command("board_state").then((c) => setBoard(c as BoardCard[])).catch(() => setBoard([]));
         l.command("vision_info").then((i) => patchVis({ available: true, calibrated: !!i.calibrated })).catch(() => patchVis({ available: false }));
         l.command("voice_info").then((i) => patchVoice({ available: true, bargeIn: !!i.barge_in })).catch(() => patchVoice({ available: false }));
@@ -128,6 +131,15 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
   const applyCal = async () => { const r = await vision.current!.applyCalibration(); patchVis({ calibrated: true }); return `Calibración aplicada y guardada (${r.finger_curled} / ${r.finger_extended}).`; };
   const send = (t: string) => run(link.current?.command("chat_send", { text: t, speak: vui.readAloud && vui.state !== "off" }));
   const toggleMic = () => run(vui.state === "off" ? voice.current?.start(vui.mode) : voice.current?.stop());
+  async function attach(files: File[]) {
+    for (const f of files.slice(0, 8)) {
+      setUploading((u) => [...u, f.name]);
+      try { await uploadAttachment(f); setNotice(""); }   // el servidor avisa por el socket con la lista nueva
+      catch (e) { setNotice((e as Error).message); }
+      setUploading((u) => { const i = u.indexOf(f.name); return i < 0 ? u : [...u.slice(0, i), ...u.slice(i + 1)]; });
+    }
+  }
+  const unattach = (id: string) => run(link.current?.command("attachment_remove", { id }));
   const closeCard = (id: string) => { setBoard((b) => b.filter((c) => c.id !== id)); run(link.current?.command("board_close", { id })); };
   const clearBoard = () => { setBoard([]); run(link.current?.command("board_clear")); };
   const pin = (text: string) => run(link.current?.command("board_add", { title: (text.split("\n").find((x) => x.trim()) ?? "Respuesta").replace(/[#*_`>]/g, "").trim().slice(0, 60) || "Respuesta", text: text.slice(0, 4000) }));
@@ -149,9 +161,12 @@ function Shell({ onLogout, onLost }: { onLogout: () => void; onLost: () => void 
         <button class="ghost" onClick={onLogout}>Cerrar sesion</button>
       </header>
       {notice && <p class="notice" role="alert">{notice}</p>}
-      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? <Chat msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} onPin={pin}
-        extra={<><VisionBar ui={vis} onToggle={toggleCam} onVideo={(v, c) => vision.current?.attach(v, c)} onCalibrate={calibrate} onApply={applyCal} /><VoiceBar ui={vui} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggle={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))}
-          onStop={() => run(voice.current?.interrupt())} onReadAloud={(readAloud) => patchVoice({ readAloud })} /></>} /> : (
+      {tab === "skills" ? <Skills link={link.current} connected={status === "open"} /> : tab === "chat" ? (
+        <Dock voice={vui} vision={vis} onMode={(mode: VoiceMode) => patchVoice({ mode })} onToggleMic={toggleMic} onPtt={(d) => run(voice.current?.ptt(d))} onStop={() => run(voice.current?.interrupt())}
+          onReadAloud={(readAloud) => patchVoice({ readAloud })} onToggleCam={toggleCam} onVideo={(v, c) => vision.current?.attach(v, c)} onCalibrate={calibrate} onApply={applyCal}>
+          {(dock) => <Chat attachments={atts} uploading={uploading} onAttach={attach} onUnattach={unattach} msgs={msgs} busy={busy} connected={status === "open"} onSend={send} onStop={stop} onNew={fresh} onPin={pin} dock={dock} />}
+        </Dock>
+      ) : (
         <Panel link={link.current} connected={status === "open"} snap={snap} log={log} />
       )}
       {tab === "holo" && link.current && vision.current && (HoloView ? (

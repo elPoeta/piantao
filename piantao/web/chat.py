@@ -106,6 +106,7 @@ class ChatSession:
         self.agent, self.bus, self.broadcast, self.confirmer = agent, bus, broadcast, confirmer
         self._task: asyncio.Task[None] | None = None
         self._turn = 0
+        self.reset_hooks: list[Callable[[], None]] = []  # p. ej. soltar los adjuntos al empezar otra conversacion
         self.speaker: Any = None  # objeto con begin/feed/end/stop (SpeechPipeline) mientras la voz web esta activa
 
     @property
@@ -218,6 +219,8 @@ class ChatSession:
             if self.busy:
                 raise ValueError("hay un turno en curso")
             self.agent.reset()
+            for hook in self.reset_hooks:
+                hook()
             return True
 
         async def chat_resume(args: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +233,8 @@ class ChatSession:
                 n = self.agent.resume(cid)
             except RuntimeError as exc:
                 raise ValueError(str(exc)) from exc
+            for hook in self.reset_hooks:
+                hook()
             return {"loaded": n}
 
         async def permission_answer(args: dict[str, Any]) -> bool:
